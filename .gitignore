@@ -1,0 +1,47 @@
+.DS_Store
+.env
+.venv/
+node_modules/
+__pycache__/
+*.pyc
+
+# Local credentials and authenticated sessions
+private/
+*.cookie*
+*api-token*
+deepseek.json
+qr.png
+
+# Runtime state, customer data, logs, and generated documents
+watchlist.json
+leads-history.json
+four-hour-delivery.json
+four-hour-last-*.json
+four-hour-latest-*.md
+four-hour-latest-scan-path.txt
+four-hour-scan-*.json
+scan-latest.json
+deepseek-review-cache.json
+deepseek-last-review.json
+run-status.json
+run-history.jsonl
+run.log
+backend-supervisor.log
+mcp-requests.jsonl
+chat-rerun*.json
+chat-rerun*.log
+chat-rerun.lock/
+four-hour.lock/
+smartpage/
+output/
+collaboration/inbox/
+collaboration/ledger.json
+
+# Local inventory and personal configuration
+*.xlsx
+*.xls
+monitor-config.local.json
+merchant-registry.local.json
+monitor-config.json
+camera-catalog.json
+merchant-registry.json

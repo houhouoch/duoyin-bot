@@ -1,0 +1,10 @@
+model:
+  provider: custom
+  default: deepseek-flash
+  base_url: https://api.deepseek.com
+cron:
+  script_timeout_seconds: 1800
+mcp_servers: {}
+platforms: {}
+agent:
+  reasoning_effort: low

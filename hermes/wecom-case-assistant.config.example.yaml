@@ -1,0 +1,28 @@
+model:
+  provider: custom
+  default: deepseek-flash
+  base_url: https://api.deepseek.com
+  api_key: ${DEEPSEEK_API_KEY}
+platforms:
+  wecom:
+    enabled: true
+    extra:
+      dm_policy: pairing
+      group_policy: allowlist
+      allow_from: []
+      group_allow_from: []
+platform_toolsets:
+  cli: [mcp-xhs_patrol]
+  wecom: [mcp-xhs_patrol]
+  cron: []
+agent:
+  reasoning_effort: low
+  disabled_toolsets: [kanban]
+mcp_servers:
+  xhs_patrol:
+    command: ${DUOYIN_PYTHON}
+    args: [${DUOYIN_HOME}/patrol-control-mcp.py]
+    timeout: 20
+    connect_timeout: 15
+    tools:
+      include: [patrol_status, patrol_rerun]

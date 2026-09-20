@@ -1,0 +1,23 @@
+const fs=require('node:fs');
+const path=require('node:path');
+const crypto=require('node:crypto');
+const {spawn}=require('node:child_process');
+const readline=require('node:readline');
+const {sanitize}=require('../mcp-readonly.cjs');
+
+process.umask(0o077);
+const root=process.env.XHS_MCP_HOME||path.join(require('node:os').homedir(),'.local/share/duoyin-bot/xiaohongshu-mcp-v2.5.0');
+const state=path.join(root,'private');
+const binary=path.join(root,process.platform==='darwin'?'xiaohongshu-mcp-darwin-arm64':'xiaohongshu-mcp-linux-amd64');
+fs.mkdirSync(state,{recursive:true,mode:0o700});
+const tokenPath=path.join(state,'api-token');
+if(!fs.existsSync(tokenPath))fs.writeFileSync(tokenPath,crypto.randomBytes(32).toString('hex'),{mode:0o600,flag:'wx'});
+fs.chmodSync(tokenPath,0o600);
+const token=fs.readFileSync(tokenPath,'utf8').trim();
+const cookiePath=path.join(state,'cookies.json');
+if(fs.existsSync(cookiePath))fs.chmodSync(cookiePath,0o600);
+const child=spawn(binary,['-port','127.0.0.1:18061'],{cwd:state,env:{...process.env,AUTH_TOKEN:token,COOKIES_PATH:cookiePath},stdio:['ignore','pipe','pipe']});
+for(const stream of [child.stdout,child.stderr])readline.createInterface({input:stream}).on('line',line=>process.stderr.write(sanitize(line,[token])+'\n'));
+for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>child.kill(signal));
+child.on('error',error=>{console.error(sanitize(error.message,[token]));process.exitCode=1;});
+child.on('exit',code=>{process.exitCode=code??1;});

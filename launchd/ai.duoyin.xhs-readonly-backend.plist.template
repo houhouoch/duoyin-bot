@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>ai.duoyin.xhs-readonly-backend</string>
+  <key>ProgramArguments</key><array><string>__NODE_BIN__</string><string>__DUOYIN_HOME__/scripts/start-xhs-backend.cjs</string></array>
+  <key>WorkingDirectory</key><string>__DUOYIN_HOME__</string>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+  <key>EnvironmentVariables</key><dict>
+    <key>DUOYIN_HOME</key><string>__DUOYIN_HOME__</string>
+    <key>XHS_MCP_HOME</key><string>__HOME__/.local/share/duoyin-bot/xiaohongshu-mcp-v2.5.0</string>
+  </dict>
+  <key>StandardOutPath</key><string>__HOME__/Library/Logs/duoyin-xhs-backend.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/Library/Logs/duoyin-xhs-backend.log</string>
+</dict></plist>
