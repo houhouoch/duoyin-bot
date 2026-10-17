@@ -6,7 +6,7 @@ const {prepare,verifyAccepted,completion}=require('./delivery-integrity.cjs');
 const {render}=require('./concise-message.cjs');
 const config=require('./monitor-config.json');
 const credentials={base_url:'https://api.deepseek.com',model:'deepseek-flash',api_key:'test-only'};
-const lead=i=>({key:'c'+i,type:'comment',note_id:'fixture',title:'相机出租',url:'https://www.xiaohongshu.com/explore/fixture',first_discovered_at:new Date(Date.now()-60000+i).toISOString(),comment:{id:'c'+i,author:'测试客户',text:'求租相机'+i,published_at_ms:Date.now()-1000}});
+const lead=i=>({key:'c'+i,type:'comment',note_id:'fixture',title:'求租相机',url:'https://www.xiaohongshu.com/explore/fixture',first_discovered_at:new Date(Date.now()-60000+i).toISOString(),comment:{id:'c'+i,author:'测试客户',text:'求租相机'+i,published_at_ms:Date.now()-1000}});
 const response=(source,decision='demand')=>({ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify({decision,evidence:source,device:'相机',location:'未知',rental_period:'未知'})}}],usage:{prompt_tokens:20,completion_tokens:10,total_tokens:30}})});
 test('52 candidates continue through 3 batches, preserving a shared budget and checkpoints',async()=>{
  const rows=Array.from({length:52},(_,i)=>lead(i)),watch={outbox:Object.fromEntries(rows.map(x=>[x.key,x]))};let calls=0,checkpoints=[];
@@ -62,10 +62,10 @@ test('split messages count every key once; incomplete and uncertain receipts nev
  batches[planned[1].hash].status='uncertain';assert.throws(()=>verifyAccepted(planned,batches,history),/未确认成功/);
  batches[planned[1].hash].status='accepted';delete history.sent[pending[0].key];assert.throws(()=>verifyAccepted(planned,batches,history),/去重记录/);
 });
-test('partial review, incomplete search and queue backlog require a separate alert',()=>{
+test('partial review, incomplete search and queue backlog remain partial without a separate group alert',()=>{
  const ok={status:'accepted_by_wecom'};
  assert.equal(completion({complete:true},{status:'completed'},0,ok).needs_alert,false);
- for(const [s,r,p] of [[{complete:false},{},0],[{searches:[{error:'INTERNAL_ERROR'}]},{},0],[{}, {status:'partial',deferred:28},28],[{}, {},1]])assert(completion(s,r,p,ok).needs_alert);
+ for(const [s,r,p] of [[{complete:false},{},0],[{searches:[{error:'INTERNAL_ERROR'}]},{},0],[{}, {status:'partial',deferred:28},28],[{}, {},1]]){const result=completion(s,r,p,ok);assert.equal(result.status,'partial');assert.equal(result.needs_alert,false);assert(result.issues_recorded);}
  const a=prepare([],render({config,alert:'partial'}),{alertScope:'run1'}),b=prepare([],render({config,alert:'partial'}),{alertScope:'run2'});
  assert.notEqual(a[0].hash,b[0].hash);assert(!a[0].content.includes('INTERNAL_ERROR'));assert(!a[0].content.includes('28'));
 });

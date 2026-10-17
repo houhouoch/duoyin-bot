@@ -17,11 +17,11 @@ class ControlTest(unittest.TestCase):
         self.base = Path(self.temp.name)
         self.scope = patch.object(control, 'BASE', self.base)
         self.scope.start()
-        self.job = patch.object(control, 'JOB', 'fixture-job')
-        self.job.start()
+        self.job_scope = patch.object(control, 'JOB', 'fixture-job')
+        self.job_scope.start()
 
     def tearDown(self):
-        self.job.stop()
+        self.job_scope.stop()
         self.scope.stop()
         self.temp.cleanup()
 

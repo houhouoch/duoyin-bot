@@ -20,3 +20,5 @@ Read repository `AGENTS.md`, `docs/STRATEGY.md`, `docs/SECURITY.md`, and `docs/O
 ## Delivery
 
 Use the configured Enterprise WeChat group name and resolve its current `chat_id` from the current session list. Do not persist group or member IDs in Git. Keep group messages concise; full records belong in the daily Smartpage and per-run child page.
+
+Current defaults exclude peer posts and all comments below them, including manual-review candidates. First three searches cover explicit camera, phone and lens demand. Keep unread details in the original watchlist, show publication/discovery/confirmed delivery times, and archive operational issues in documents without group alerts. Daily summaries are chronological, without follow-up tables. Export code and sanitized policy templates only; tests run in temporary state.

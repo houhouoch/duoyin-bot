@@ -1,6 +1,5 @@
 // Bounded recovery for the existing, authenticated local read-only MCP service.
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-const backendUrl=(process.env.XHS_BACKEND_URL||'http://127.0.0.1:18061').replace(/\/$/,'');
 function sanitize(value,secrets=[]){
  let s=String(value??'');
  for(const secret of secrets)if(secret)s=s.split(secret).join('[REDACTED]');
@@ -32,7 +31,7 @@ async function read(endpoint,body,{token,fetcher=fetch,sleep=delay,now=Date.now,
   const started=now();let result,error,status;
   if(deadline-started<timeout_ms){const e=new Error('采集时间预算不足，未启动下一次请求');e.code='BUDGET_DEFERRED';throw e;}
   try{
-   const response=await fetcher(backendUrl+'/api/v1/feeds/'+endpoint,{method:'POST',redirect:'error',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(timeout_ms)});
+   const response=await fetcher((process.env.XHS_BACKEND_URL||'http://127.0.0.1:18061').replace(/\/$/,'')+'/api/v1/feeds/'+endpoint,{method:'POST',redirect:'error',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(timeout_ms)});
    status=response.status;
    let data;try{data=await response.json();}catch{throw failure(status,{code:'INVALID_RESPONSE',error:'MCP返回非JSON响应'},[token]);}
    if(!response.ok||data.success!==true)throw failure(status,data,[token]);

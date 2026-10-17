@@ -2,7 +2,7 @@ const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),{execFileSync}=require('node:child_process');
 const {reviewQueue,approved,classify}=require('./deepseek-review.cjs');
 const credentials={base_url:'https://api.deepseek.com',model:'deepseek-flash',api_key:'test-only'};
-const lead=i=>({key:'c'+i,note_id:'fixture',type:'comment',title:'相机出租',url:'https://www.xiaohongshu.com/explore/fixture',first_discovered_at:new Date(Date.now()-100000+i).toISOString(),comment:{id:'c'+i,author:'测试客户',text:'求租相机'+i,published_at_ms:Date.now()-1000}});
+const lead=i=>({key:'c'+i,note_id:'fixture',type:'comment',title:'求租相机',url:'https://www.xiaohongshu.com/explore/fixture',first_discovered_at:new Date(Date.now()-100000+i).toISOString(),comment:{id:'c'+i,author:'测试客户',text:'求租相机'+i,published_at_ms:Date.now()-1000}});
 const reply=(subject,patch={})=>({ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify({decision:'demand',evidence:subject,device:'相机',location:'未知',rental_period:'未知',...patch})}}],usage:{prompt_tokens:20,completion_tokens:10,total_tokens:30}})});
 test('a twice-invalid candidate does not block 18 already approved or later candidates',async()=>{
  const rows=Array.from({length:20},(_,i)=>lead(i)),w={outbox:Object.fromEntries(rows.map(x=>[x.key,x]))},cache={items:{}};let calls=0;
@@ -10,6 +10,8 @@ test('a twice-invalid candidate does not block 18 already approved or later cand
  assert.equal(calls,21);assert.equal(stats.failed_candidates,1);assert.equal(stats.deferred,1);assert.equal(stats.reviewed,19);
  assert.equal(Object.values(w.outbox).filter(approved).length,19);assert(!approved(rows[18]));assert(approved(rows[19]));
  assert.match(rows[18].ai_review_error.code,/INVALID_LOCATION/);assert.equal(Object.keys(cache.items).length,19);assert(!JSON.stringify(stats).includes('不存在的城市'));
+ const cooled=await reviewQueue(w,{sent:{}},cache,credentials,{fetcher:()=>{throw Error('cooldown must not call model');}});assert.equal(cooled.stats.cooldown_candidates,1);
+ rows[18].ai_review_error.next_retry_at=new Date(Date.now()-1000).toISOString();
  const recovered=await reviewQueue(w,{sent:{}},cache,credentials,{fetcher:async(u,o)=>reply(JSON.parse(JSON.parse(o.body).messages[1].content).subject)});
  assert.equal(recovered.stats.reviewed,1);assert(approved(rows[18]));assert(!rows[18].ai_review_error);
 });
@@ -34,7 +36,7 @@ test('global authorization failures still stop the review; they are not mislabel
 test('approved-only recovery uses the lock and original sender, never calls MCP or model',async()=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'xhs-approved-recovery-'));
  try{
-  for(const f of ['run-four-hour.cjs','notify-four-hour.cjs','delivery-integrity.cjs','concise-message.cjs','demand-validity.cjs','deepseek-review.cjs','lead-fields.cjs','rental-strategy.cjs','hot-pools.cjs','camera-catalog.json','monitor-config.json'])fs.copyFileSync(path.join(__dirname,f),path.join(dir,f));
+  for(const f of ['run-four-hour.cjs','patrol-health.cjs','daily-document-extras.cjs','lead-presentation.cjs','notify-four-hour.cjs','delivery-integrity.cjs','concise-message.cjs','demand-validity.cjs','deepseek-review.cjs','lead-fields.cjs','rental-strategy.cjs','hot-pools.cjs','camera-catalog.json','monitor-config.json'])fs.copyFileSync(path.join(__dirname,f),path.join(dir,f));
   const cfg=JSON.parse(fs.readFileSync(path.join(dir,'monitor-config.json')));cfg.document_delivery={enabled:false};fs.writeFileSync(path.join(dir,'monitor-config.json'),JSON.stringify(cfg));
   const rows=Array.from({length:19},(_,i)=>lead(i));for(const x of rows.slice(0,18))x.ai_review=await classify(x,credentials,async()=>reply(x.comment.text));
   fs.writeFileSync(path.join(dir,'watchlist.json'),JSON.stringify({outbox:Object.fromEntries(rows.map(x=>[x.key,x]))}));

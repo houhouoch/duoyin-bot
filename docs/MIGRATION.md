@@ -1,8 +1,8 @@
-# 新电脑迁移步骤
+# 新电脑部署
 
-以下步骤不会复制旧电脑的登录态。必须在新电脑分别扫码授权。
+支持 Apple Silicon macOS。需要 Git、Node.js >=20、Python >=3.10，以及各自的小红书账号、企业微信机器人和 DeepSeek Key。默认模板复刻 2026-10-17 策略；账号可见内容与实际结果可能不同。
 
-## 1. 安装基础组件
+## 1. 安装并初始化
 
 ```bash
 git clone https://github.com/houhouoch/duoyin-bot.git
@@ -10,58 +10,48 @@ cd duoyin-bot
 bash scripts/bootstrap-macos.sh
 ```
 
-脚本会安装固定版本企业微信 CLI、官方 Skill、Hermes（若缺失）、Python 依赖和带校验的小红书 MCP 二进制。安装后先重开一个终端，确认 `hermes` 在 `PATH` 中。
+安装脚本创建项目 `.venv`，安装固定版本 Python 直接依赖、`package-lock.json` 中的 Node 依赖和 Chromium，安装企业微信 CLI、带 SHA-256 校验的 MCP 二进制。缺少 Hermes 时，使用已确认的上游提交安装。已有 Hermes 不自动覆盖，参考组件清单核对兼容性。
 
-## 2. 配置业务参数
+脚本渲染当前电脑的路径、独立 Profile 和 LaunchAgent；不会启动服务、创建定时任务、登录或发群。已有业务配置与状态不覆盖。若 Hermes 刚安装，重开终端确保 `hermes` 在 PATH 中。
 
 ```bash
 bash scripts/init-example-state.sh
 ```
 
-编辑本机 `monitor-config.json`：
+该命令只补缺失文件。编辑被 Git 忽略的 `monitor-config.json`，把 `target_group` 设为测试群名；其他默认策略见 STRATEGY.md。不要填写群聊 ID。`document_delivery.join=public` 表示持链接只读，可按实际权限要求调整并验收。
 
-- 把 `target_group` 改为目标企业微信群名。
-- 按需修改关键词、计划和文档权限。
-- 不要填写群聊 ID；发送时程序每轮从当前会话列表按群名唯一匹配。
-
-导入库存：
+## 2. 导入自己的库存
 
 ```bash
 .venv/bin/python3 import-inventory.py /绝对路径/库存.xlsx
 ```
+
+Excel 每行第一列为类别，第二列为型号或组合；空类别沿用上一行。库存文件需长期留在该绝对路径，所有工作表及源指纹仅保存在本机派生目录，原表不修改。示例目录只用于离线测试，不能代替实际库存导入。
 
 ## 3. 企业微信授权
 
 ```bash
 export WECOM_CLI_CONFIG_DIR="$HOME/.hermes/profiles/wecom-case-assistant/wecom-cli"
 wecom-cli auth init --noninteractive --output-qrcode qr.png
-wecom-cli auth status
+wecom-cli auth show --status
 wecom-cli message aibot sessions list
 ```
 
-在目标群里 `@机器人` 发一条测试消息，再重新列出会话。目标群名必须唯一出现。不要把返回的 `chat_id` 写入仓库。
+只在新部署时初始化授权。已有机器人授权失效时按 CLI 提示续期，避免无意创建新机器人。把机器人加入测试群并在群内 @机器人；会话列表中的目标群名必须唯一。将消息发送、智能文档创建/读写/搜索等权限一并授权；authorized 不等于目标文档可读写。内部 ID 和扫码文件只保存在本机。
 
-## 4. 小红书扫码登录
+## 4. 小红书扫码与后端
 
 ```bash
 export XHS_MCP_HOME="$HOME/.local/share/duoyin-bot/xiaohongshu-mcp-v2.5.0"
-cd "$XHS_MCP_HOME/private"
-../xiaohongshu-login-darwin-arm64
-chmod 600 cookies.json
-```
-
-加载后台服务：
-
-```bash
+(cd "$XHS_MCP_HOME/private" && ../xiaohongshu-login-darwin-arm64)
+chmod 600 "$XHS_MCP_HOME/private/cookies.json"
 launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/ai.duoyin.xhs-readonly-backend.plist"
 curl -fsS http://127.0.0.1:18061/health
 ```
 
-如果平台要求验证码或显示访问限制，停止操作并等待人工恢复；不要换账号绕过。
+启动器生成本机令牌，Cookie 和令牌位于 private，不复制旧电脑登录态。已有同端口后端时先确认只保留一个所有者，不并行启动。验证码或访问限制由人工恢复，不换账号绕过。
 
-## 5. DeepSeek
-
-创建本机私密文件：
+## 5. DeepSeek 本机私密配置
 
 ```bash
 mkdir -p "$HOME/.hermes/profiles/xhs-rental-monitor/private"
@@ -70,24 +60,39 @@ cp deepseek.example.json "$HOME/.hermes/profiles/xhs-rental-monitor/private/deep
 chmod 600 "$HOME/.hermes/profiles/xhs-rental-monitor/private/deepseek.json"
 ```
 
-编辑 `api_key`。不要在终端命令历史、聊天或 Git 中粘贴 Key。
+仅新部署时复制；已有配置不要覆盖。在编辑器填自己的 api_key，不在命令历史或 Git 中粘贴。周期复核直接读该文件；不依赖聊天 Profile 的 Key。
 
-## 6. Hermes 巡检 Profile 和 cron
+## 6. 离线检查与测试群人工验收
+
+回到仓库根目录执行：
 
 ```bash
-mkdir -p "$HOME/.hermes/profiles/xhs-rental-monitor"
-cp hermes/xhs-rental-monitor.config.example.yaml "$HOME/.hermes/profiles/xhs-rental-monitor/config.yaml"
-repo="$(pwd)"
-sed -e "s|__DUOYIN_HOME__|$repo|g" -e "s|__WECOM_CLI_BIN__|$(command -v wecom-cli)|g" scripts/xhs-rental-four-hour.sh > "$HOME/.hermes/profiles/xhs-rental-monitor/scripts/xhs-rental-four-hour.sh"
-chmod 700 "$HOME/.hermes/profiles/xhs-rental-monitor/scripts/xhs-rental-four-hour.sh"
-HERMES_HOME="$HOME/.hermes/profiles/xhs-rental-monitor" hermes cron create '0 */4 * * *' --name '小红书求租线索4小时巡检' --deliver local --script xhs-rental-four-hour.sh --no-agent --workdir "$repo"
+npm test
+bash scripts/secret-scan.sh
+bash scripts/doctor.sh
+bash "$HOME/.hermes/profiles/xhs-rental-monitor/scripts/xhs-rental-four-hour.sh"
 ```
 
-记录返回的任务 ID，只写入本机 `wecom-case-assistant/.env` 的 `HERMES_XHS_JOB_ID`，不要提交。
+前三项分别验证隔离测试、发布文件和本机依赖/授权状态；最后一项会实际采集、调用付费模型、创建文档并向配置的测试群发送，使用原持锁统一入口。只在完成测试群配置后人工执行一次。核对原文、来源链接、时间、完整汇总、访问权限和明确发送回执；上传或文档保存不代表发群成功。不要直接调用 scan 或通知器来绕过统一入口。
 
-## 7. Hermes 企业微信助手
+## 7. 启用唯一 Hermes 周期任务
 
-复制 `hermes/wecom-case-assistant.config.example.yaml`，再在该 Profile 的 `.env` 中填写示例要求的变量。群白名单 ID 必须从新电脑的真实入站消息获取，不能复制旧电脑 ID。
+验收通过后，把 target_group 改为正式群并核实唯一会话；先检查没有旧巡检任务。仓库目录中执行：
+
+```bash
+repo="$(pwd)"
+HERMES_HOME="$HOME/.hermes/profiles/xhs-rental-monitor" hermes cron list
+TZ=Asia/Shanghai HERMES_HOME="$HOME/.hermes/profiles/xhs-rental-monitor" hermes cron create '0 */4 * * *' --name '小红书求租线索4小时巡检' --deliver local --script xhs-rental-four-hour.sh --no-agent --workdir "$repo"
+HERMES_HOME="$HOME/.hermes/profiles/xhs-rental-monitor" hermes gateway install
+HERMES_HOME="$HOME/.hermes/profiles/xhs-rental-monitor" hermes gateway start
+HERMES_HOME="$HOME/.hermes/profiles/xhs-rental-monitor" hermes gateway status
+```
+
+巡检 Profile 的 `.env` 由初始化写入 `TZ=Asia/Shanghai`，保障北京时间六轮。记录新任务 ID，仅写入自己电脑聊天 Profile `.env` 的 HERMES_XHS_JOB_ID。更换路径后重新渲染 `python3 scripts/configure-local.py`，核对已有配置中的路径，不复制旧电脑 ID 或状态文件。本机需要开机在线且保持唤醒；不是云端服务。
+
+## 8. 可选：企业微信聊天助手
+
+只要定时推送，步骤七即可。若需要群聊查询状态和明确指令触发巡检，使用已生成的 `wecom-case-assistant/config.yaml` 和 `.env`：填写自己的 DEEPSEEK_API_KEY、HERMES_XHS_JOB_ID，并按 Hermes 平台配置补齐机器人凭证及群白名单。模板里的空 allowlist 不授予任何群访问；只添加自己真实入站消息中的授权群。
 
 ```bash
 HERMES_HOME="$HOME/.hermes/profiles/wecom-case-assistant" hermes gateway install
@@ -95,21 +100,6 @@ HERMES_HOME="$HOME/.hermes/profiles/wecom-case-assistant" hermes gateway start
 HERMES_HOME="$HOME/.hermes/profiles/wecom-case-assistant" hermes gateway status
 ```
 
-完整验收必须包含：企业微信入站、Hermes/DeepSeek 推理、`patrol_status`、企业微信出站。仅看到 Gateway 常驻不算端到端完成。
+聊天 Profile 仅挂载 patrol_status 和 patrol_rerun 两个工具，后者只触发步骤七的原任务，不增加第二个计划。必须验证实际入站、模型推理、工具结果和出站；常驻不等于端到端通过。
 
-若新电脑也用 Codex 维护本项目，可把仓库内 Skill 复制到本机：
-
-```bash
-mkdir -p "$HOME/.codex/skills/xhs-rental-leads"
-cp skills/xhs-rental-leads/SKILL.md "$HOME/.codex/skills/xhs-rental-leads/SKILL.md"
-```
-
-## 8. 上线前验收
-
-```bash
-npm test
-bash scripts/doctor.sh
-bash scripts/secret-scan.sh
-```
-
-先使用测试群做一轮人工触发。核对帖子链接、评论位置、数量、每日总览、子页面、访问权限和发送回执。确认后才把 `target_group` 改为正式群并保留唯一 cron。
+Codex 维护 Skill 可从 skills/xhs-rental-leads/SKILL.md 安装。升级/回滚只处理代码和模板，绝不覆盖原队列、历史去重及发送回执。

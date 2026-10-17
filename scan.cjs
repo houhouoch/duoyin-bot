@@ -12,10 +12,12 @@
  */
 const fs = require('node:fs');
 const path = require('node:path');
-const {fields,config,merchant,insufficientComment}=require('./lead-fields.cjs');
+const {fields,config,merchant,insufficientComment,peerExcluded}=require('./lead-fields.cjs');
 const strategy=require('./rental-strategy.cjs');
 const hot=require('./hot-pools.cjs');
 const {read:readMcp}=require('./mcp-readonly.cjs');
+const patrolHealth=require('./patrol-health.cjs');
+const unread=require('./unread-candidates.cjs');
 const requestEvents=[];
 let requestDeadline=Infinity;
 const REVIEW_VERSION='inventory-intent-v4-ten-days';
@@ -34,7 +36,7 @@ const RECHECK_MAX = Number(arg('recheck-max', String(config.max_rechecks_per_run
 const RECHECK = !process.argv.includes('--no-recheck');
 const WATCH_PATH = arg('watchlist', path.join(BASE, 'watchlist.json'));
 
-const token = fs.readFileSync(path.join(TOOLS, 'private/api-token'), 'utf8').trim();
+
 
 const START = Math.floor((Date.now()+8*3600000)/86400000)*86400000-8*3600000-(DAYS-1)*86400000;
 const END = Date.now();
@@ -95,8 +97,8 @@ const RE_MERCHANT_NAME = /租赁|出租|租机|租相机|相机铺|数码|影像
 const RE_OFFER_MODEL = /(佳能|索尼|尼康|富士|理光|松下|大疆|影石|insta|pocket|ccd|ixus|g7x|g11|r50|r62|r7|r8|r10|a7|z50|z62|sx70|x100|gr3|gr2)[^，。]{0,10}(可以吗|行吗|可以嘛|要不|考虑吗|需要吗)/i;
 
 // ---------- 请求 ----------
-async function call(endpoint, body) {
-  return readMcp(endpoint,body,{token,deadline:requestDeadline,interval_ms:config.request_interval_ms,onAttempt:event=>{
+async function call(endpoint, body,timeoutMs=endpoint==='search'?65000:120000) {
+  return readMcp(endpoint,body,{token,timeout_ms:timeoutMs,deadline:requestDeadline,interval_ms:config.request_interval_ms,onAttempt:event=>{
     requestEvents.push(event);
     fs.appendFileSync(path.join(BASE,'mcp-requests.jsonl'),JSON.stringify(event)+'\n',{mode:0o600});
     if(event.status==='failed')console.log(`[MCP ${endpoint}] 第${event.attempt}次失败：${event.code} / ${event.details}`);
@@ -188,45 +190,44 @@ if (process.argv.includes('--reclassify')) {
 // ---------- 自测：评论求租意图判定回归 ----------
 // node scan.cjs --selftest
 if (process.argv.includes('--selftest')) {
+  // Fictional fixtures only; never embed captured customer text or nicknames.
   const CASES = [
-    // [评论内容, 评论者昵称, 是否帖主, 帖主是否求租帖, 期望意图]
-    ['租大疆', '小红薯6881E012', false, false, 'demand-strong'],
-    ['周末想租个相机拍娃', '小鱼', false, false, 'demand-strong'],
-    ['多少钱一天呀', 'momo', false, false, 'demand-weak'],
-    ['可以免押吗', '奶糖', false, false, 'demand-weak'],
-    ['能邮寄吗 我在哈尔滨', '阿远', false, false, 'demand-weak'],
-    ['支持自提吗', '可可', false, false, 'demand-weak'],
-    ['租金怎么算', '小周', false, false, 'demand-weak'],
-    ['25-27租三天4p', '帖主本人', true, true, 'poster'],
-    ['还没租到，有推荐吗', '帖主本人', true, true, 'poster'],
-    ['租到合适的了谢谢大家', '帖主本人', true, true, 'resolved'],
-    ['我这边有机子 免押顺丰', '相机租赁铺', false, false, 'supply'],
-    ['佳能r50可以吗', '数码影像店', false, false, 'supply'],
-    ['宝宝什么想租什么机型呀', '租赁驿站', false, false, 'supply'],
-    ['我有货 可以租给你', 'Xwxn888', false, false, 'supply'],
-    ['哈哈哈哈', 'momo', false, false, 'other'],
-    ['还没租到，谢谢大家', '帖主本人', true, true, 'poster'],
-    ['谢谢大家，还是想租广州的', '帖主本人', true, true, 'poster'],
-    ['M200可以吗', '咪哆咪哆', false, false, 'supply'],
-    ['x3还有档期', '悦肯', false, false, 'supply'],
-    // —— 以下为 2026-09-18 首轮 3 小时巡检中实际踩到的硬骨头 ——
-    ['怎么预约呀', '小能', false, false, 'demand-weak'],          // 客户问流程 = 需求
-    ['问价', '无面不活', false, false, 'demand-weak'],            // 问价 = 需求
-    ['个人可租4p免押', 'Tokkau', false, false, 'supply'],         // "个人可租" 是供给
-    ['南三环可租，走 pt', '布丁', false, false, 'supply'],         // 走pt（带空格）
-    ['宝宝想租什么机型呀', '大敏星租个相机去看海', false, false, 'supply'], // 商家反问
-    ['顺丰邮寄接受吗', '金喜派送中', false, false, 'demand-weak'],  // 客户问邮寄
-    ['M200可以吗', '咪哆咪哆', false, false, 'supply'],           // 已核对原帖：在求租帖下提供其他型号
-    ['x3还有档期', '悦肯', false, false, 'supply'],               // 已核对原帖：提供空余档期
-    ['想租相机吗，自用相机可租', '芝士小鱼饼🧀', false, false, 'supply'],
-    ['求租相机', '小屿📸租赁', false, false, 'supply'],
-    ['我的自用全能套装，169一天219两天哦', 'loel', false, false, 'supply'],
-    ['我租的10.2 160一天vivox300u', 'qqw', false, false, 'other'],
-    ['蹲蹲', '鸭梨', false, false, 'other'],
-    ['有大疆4p吗', '普通客户', false, false, 'demand-weak'],
-    ['19号有rf400的镜头吗', '普通客户', false, false, 'demand-weak'],
-    ['how much', '普通客户', false, false, 'demand-weak'],
-    ['周末想租手机演唱会用', '普通客户', false, false, 'demand-strong'],
+    ['租大疆', '示例用户01', false, false, 'demand-strong'],
+    ['周末想租个相机拍小狗', '示例用户02', false, false, 'demand-strong'],
+    ['多少钱一天呢', '示例用户03', false, false, 'demand-weak'],
+    ['可以免押吗', '示例用户04', false, false, 'demand-weak'],
+    ['能邮寄吗 我在北京', '示例用户05', false, false, 'demand-weak'],
+    ['支持自提吗', '示例用户06', false, false, 'demand-weak'],
+    ['租金怎么算', '示例用户07', false, false, 'demand-weak'],
+    ['12-14租三天4p', '示例帖主', true, true, 'poster'],
+    ['还没租到，有建议吗', '示例帖主', true, true, 'poster'],
+    ['租到合适的了谢谢大家', '示例帖主', true, true, 'resolved'],
+    ['我这边有机子 免押顺丰', '示例商家', false, false, 'supply'],
+    ['佳能r50可以吗', '示例商家', false, true, 'supply'],
+    ['宝宝什么想租什么机型呀', '示例商家', false, false, 'supply'],
+    ['我有货 可以租给你', '示例商家', false, false, 'supply'],
+    ['哈哈哈哈', '示例用户08', false, false, 'other'],
+    ['还没租到，谢谢大家', '示例帖主', true, true, 'poster'],
+    ['谢谢大家，还是想租北京的', '示例帖主', true, true, 'poster'],
+    ['M200可以吗', '示例商家', false, true, 'supply'],
+    ['x3还有档期', '示例商家', false, true, 'supply'],
+    ['怎么预约呢', '示例用户09', false, false, 'demand-weak'],
+    ['问价', '示例用户10', false, false, 'demand-weak'],
+    ['个人可租4p免押', '示例商家', false, false, 'supply'],
+    ['东城区可租，走 pt', '示例商家', false, false, 'supply'],
+    ['宝宝想租什么机型呀', '示例商家', false, false, 'supply'],
+    ['顺丰邮寄接受吗', '示例用户11', false, false, 'demand-weak'],
+    ['M200可以吗', '示例商家', false, false, 'supply'],
+    ['x3还有档期', '示例商家', false, false, 'supply'],
+    ['想租相机吗，自用相机可租', '示例商家', false, false, 'supply'],
+    ['求租相机', '示例相机租赁店', false, false, 'supply'],
+    ['r50+18-45三天一共246', '示例商家', false, true, 'supply'],
+    ['我已经租到了相机，使用体验不错', '示例用户12', false, false, 'other'],
+    ['蹲蹲', '示例用户13', false, false, 'other'],
+    ['有大疆4p吗', '示例用户14', false, false, 'demand-weak'],
+    ['12号有rf400的镜头吗', '示例用户15', false, false, 'demand-weak'],
+    ['how much', '示例用户16', false, false, 'demand-weak'],
+    ['周末想租手机演唱会用', '示例用户17', false, false, 'demand-strong'],
   ];
   let ok = 0;
   for (const [text, author, isAuthor, isDemandPost, expect] of CASES) {
@@ -236,10 +237,12 @@ if (process.argv.includes('--selftest')) {
     console.log(`  ${pass ? '✅' : '❌'} 期望 ${expect.padEnd(14)} 实际 ${got.padEnd(14)} ${author}｜${text}`);
   }
   console.log(`回归通过 ${ok}/${CASES.length}`);
-  const ads=[['温州附近有没有想租相机的','全程走pt','炭酸日和',false],['求租大疆','24号拿到27号送回','小鱼',true],['厦门租相机巨平价','信用免押','小屿租赁',false],['会好好爱护相机 有意出租','9.29收到 10.7归还','momo',true],['想租相机？','自用相机可租✅','芝士小鱼饼🧀',false]];
+  const ads=[['附近有没有想租相机的','全程走pt','示例商家',false],['求租大疆','12号拿到15号送回','示例用户',true],['北京租相机巨平价','信用免押','示例租赁商家',false],['会好好爱护相机 有意出租','11.12收到 11.15归还','示例用户',true],['想租相机？','自用相机可租','示例商家',false]];
   for(const [title,desc,author,expect] of ads){if(demandPost(title,desc,author)!==expect){console.error('帖子分类回归失败：'+title);process.exit(1);}}
   process.exit(ok === CASES.length ? 0 : 1);
 }
+
+const token = fs.readFileSync(path.join(TOOLS, 'private/api-token'), 'utf8').trim();
 
 // ---------- 主流程 ----------
 (async () => {
@@ -251,7 +254,7 @@ if (process.argv.includes('--selftest')) {
   const restored=hot.restoreExpired(watch,history,{...config,freshness_calendar_days:DAYS});
   const queryPlan=process.argv.includes('--keywords')?LEGACY_KEYWORDS.map(keyword=>({keyword,kind:'manual'})):strategy.queries(watch);
   KEYWORDS=queryPlan.map(x=>x.keyword);
-  const searchPlan=strategy.searchOrder(queryPlan.map(x=>({...x,query_kind:x.kind,kind:'latest',sort_by:config.sort_by,publish_time:config.publish_time})),hot.plans(watch,config));
+  const searchPlan=strategy.searchOrder(queryPlan.map(x=>({...x,query_kind:x.kind,kind:'latest',sort_by:config.sort_by,publish_time:config.publish_time})),hot.plans(watch,config),watch.query_stats||{});
 
   const state = {
     window_days: DAYS, started_at: nowIso(),
@@ -268,7 +271,7 @@ if (process.argv.includes('--selftest')) {
   const uniq = new Map();
   for (const plan of searchPlan) {
     const {keyword}=plan;
-    if(Date.now()+125000>searchDeadline){state.warnings.push('本轮搜索时间预算已达上限，剩余搜索未执行；保留时间读取详情与评论');break;}
+    if(Date.now()+70000>searchDeadline){state.warnings.push('本轮搜索时间预算已达上限，剩余搜索未执行；保留时间读取详情与评论');break;}
     try {
       const res = await call('search', { keyword, filters: { sort_by: plan.sort_by, publish_time: plan.publish_time } });
       const feeds = res.feeds || [];
@@ -296,7 +299,7 @@ if (process.argv.includes('--selftest')) {
   const items = [...uniq.values()].map(f => {
     const nc = f.noteCard || {};
     return {
-      id: f.id, token: f.xsecToken, title: nc.displayTitle || '',
+      id: f.id, token: f.xsecToken, author_id:nc.user?.userId, title: nc.displayTitle || '',
       author: nc.user?.nickname || '',
       demand: demandPost(nc.displayTitle||'','',nc.user?.nickname||'',nc.user?.userId),
       known: !!wnotes[f.id],
@@ -315,23 +318,29 @@ if (process.argv.includes('--selftest')) {
   save();
 
   // 首次发现的帖子：优先求租帖
-  const picked = strategy.freshPicks(items,MAX_DETAIL);
+  state.unread_candidates_expired=unread.remember(watch,items,Date.parse(state.started_at),DAYS);
+  const picked = unread.picks(watch,MAX_DETAIL,Date.parse(state.started_at));
+  fs.writeFileSync(WATCH_PATH,JSON.stringify(watch,null,2),{mode:0o600});
   const seenPick = new Set();
 
   // ---- 阶段 2：老帖回访（按"最近发布"优先，求租帖优先）----
   let recheckList = [];
   if (RECHECK) {
     const hotIds=new Set(Object.values(watch.hot_pools||{}).flatMap(p=>p.member_ids));
-    recheckList = strategy.rechecks(Object.fromEntries(Object.entries(wnotes).filter(([id])=>!hotIds.has(id))),RECHECK_MAX);
+    recheckList = strategy.rechecks(Object.fromEntries(Object.entries(wnotes).filter(([id,n])=>!hotIds.has(id)&&!peerExcluded({type:'note',note_id:id,...n},watch))),RECHECK_MAX);
     console.log(`[recheck] 待回访 ${recheckList.length} 篇（清单共 ${Object.keys(wnotes).length} 篇）`);
   }
 
-  const jobs=strategy.detailOrder(picked,hot.jobs(watch,config),recheckList);
+  const allowedJob=x=>!peerExcluded({type:'note',note_id:x.id,...x},watch);
+  const hotJobs=hot.jobs(watch,config).filter(allowedJob);
+  const jobs=strategy.detailOrder(picked.filter(allowedJob),hotJobs,recheckList);
   state.detail_plan=jobs.map(({id,phase,category})=>({id,phase,category}));
   state.hot_pools=hot.coverage(watch,config,state.notes);save();
 
   for (const it of jobs) {
-    if(Date.now()+125000>deadline){state.warnings.push('本轮采集时间预算已达上限，剩余帖子未读取；下轮按回访轮换继续');break;}
+    const timeoutMs=patrolHealth.detailTimeout(it,watch,config.retrieval);
+    if(Date.parse(watch.detail_health?.[it.id]?.next_attempt_at||'')>Date.now()){state.warnings.push('该帖连续读取失败，延后回访：'+(it.title||'已跟踪帖子'));continue;}
+    if(Date.now()+timeoutMs+5000>deadline){state.warnings.push('本轮采集时间预算已达上限，剩余帖子未读取；下轮按回访轮换继续');break;}
     if (seenPick.has(it.id)) continue;
     seenPick.add(it.id);
     if (!it.token) {
@@ -345,12 +354,15 @@ if (process.argv.includes('--selftest')) {
 
     try {
       if(wnotes[it.id])wnotes[it.id].last_attempted=nowIso();
+      if(watch.pending_details?.[it.id])watch.pending_details[it.id].last_attempted=nowIso();
       if(watch.hot_candidates?.[it.id])watch.hot_candidates[it.id].last_attempted=nowIso();
+      fs.writeFileSync(WATCH_PATH,JSON.stringify(watch,null,2),{mode:0o600});
       const commentLimit=hot.commentLimit(wnotes[it.id],config);
       const res = await call('detail', {
         feed_id: it.id, xsec_token: it.token, load_all_comments: true,
         comment_config: { click_more_replies: true, max_replies_threshold: config.max_replies_threshold, max_comment_items: commentLimit, scroll_speed: 'normal' },
-      });
+      },timeoutMs);
+      patrolHealth.detailResult(watch,it.id,requestEvents.at(-1),config.retrieval);
       const payload = res.data || res;
       const note = payload.note;
       if (!note) throw new Error('NO_NOTE');
@@ -381,13 +393,14 @@ if (process.argv.includes('--selftest')) {
       const sourceIsMerchant=!isDemand&&(merchant(note.user?.nickname,note.user?.userId,body)||RE_MERCHANT.test(body));
       const base={note_id:note.noteId,title,author:note.user?.nickname,author_id:note.user?.userId,published_at_ms:note.time,url,desc:note.desc,source_is_merchant:sourceIsMerchant,...extracted};
       const noteKey='note:'+note.noteId;
-      const noteCandidate=isDemand||(!merchant(base.author,base.author_id,body)&&strategy.broadCandidate(body));
-      if((!prev||prev.review_version!==REVIEW_VERSION)&&noteCandidate&&inWin(note.time)&&!isResolved&&!watch.suppressed?.[noteKey])watch.outbox[noteKey] ||= {key:noteKey,type:'note',...base,first_discovered_at:prev?.first_seen||nowIso(),classification:isDemand?'明确求租（规则判定）':'宽筛候选，待AI复核'};
-      for(const s of signals.filter(s=>(s.is_new||prev?.review_version!==REVIEW_VERSION)&&s.in_window&&!s.is_author&&(/^demand-/.test(s.kind)||(s.kind==='other'&&strategy.broadCandidate(s.text))))){
+      const excludedPeer=peerExcluded({type:'note',...base,is_demand_post:isDemand},watch);
+      const noteCandidate=!excludedPeer&&(isDemand||(!merchant(base.author,base.author_id,body)&&strategy.broadCandidate(body)));
+      if((!prev||prev.review_version!==REVIEW_VERSION)&&noteCandidate&&inWin(note.time)&&!isResolved&&!watch.suppressed?.[noteKey])watch.outbox[noteKey] ||= {key:noteKey,type:'note',...base,first_discovered_at:prev?.first_seen||watch.pending_details?.[it.id]?.first_discovered_at||nowIso(),classification:isDemand?'明确求租（规则判定）':'宽筛候选，待AI复核'};
+      for(const s of signals.filter(s=>!excludedPeer&&(s.is_new||prev?.review_version!==REVIEW_VERSION)&&s.in_window&&!s.is_author&&(/^demand-/.test(s.kind)||(s.kind==='other'&&strategy.broadCandidate(s.text))))){
         const key='comment:'+note.noteId+':'+s.id;
         if(!watch.suppressed?.[key])watch.outbox[key] ||= {key,type:'comment',...base,comment:s,...fields(s.text),first_discovered_at:prev?.comment_first_seen?.[s.id]||(prevSeen[s.id]?null:nowIso()),rechecked:!!prev,old_post_comment:!inWin(note.time),classification:s.kind==='demand-strong'?'明确求租（规则判定）':'询价／档期，待核实'};
       }
-      if(prev&&!prev.resolved&&isResolved){const key='resolved:'+note.noteId;watch.outbox[key]={key,type:'resolved',...base,evidence:signals.filter(s=>s.is_author&&s.kind==='resolved').map(s=>s.text).join('\n')||body};}
+      if(!excludedPeer&&prev&&!prev.resolved&&isResolved){const key='resolved:'+note.noteId;watch.outbox[key]={key,type:'resolved',...base,evidence:signals.filter(s=>s.is_author&&s.kind==='resolved').map(s=>s.text).join('\n')||body};}
       if(isResolved)delete watch.outbox['note:'+note.noteId];
       if(cm.hasMore)state.warnings.push('评论未完整加载：'+(title||note.user?.nickname));
       const missingReplies=(cm.list||[]).filter(c=>Number(c.subCommentCount)>(c.subComments||[]).length).length;
@@ -406,7 +419,7 @@ if (process.argv.includes('--selftest')) {
              '?xsec_token=' + encodeURIComponent(note.xsecToken || it.token || '') + '&xsec_source=pc_search',
         comments_has_more: cm.hasMore, comment_count: comments.length,comment_coverage:commentCoverage,
         rechecked: isRecheck, phase: it.phase, new_comment_count: newCount,
-        signals, resolved:isResolved,fields:extracted,
+        signals, resolved:isResolved,fields:extracted,new_demand_candidates:signals.filter(s=>s.is_new&&s.in_window&&/^demand-/.test(s.kind)).length+(noteCandidate&&!prev?1:0),
       });
 
       // 更新回访清单
@@ -414,7 +427,7 @@ if (process.argv.includes('--selftest')) {
         token: note.xsecToken || it.token, title, author: note.user?.nickname || '',
         ip: note.ipLocation || '', url: '', published_at_ms: note.time, desc: note.desc || '',
         is_demand_post: isDemand, is_merchant_post: sourceIsMerchant,
-        first_seen: nowIso(), seen: {},
+        first_seen: watch.pending_details?.[it.id]?.first_discovered_at||nowIso(), seen: {},
       });
       rec.token = note.xsecToken || rec.token;
       rec.title = title; rec.desc = note.desc || rec.desc;
@@ -424,6 +437,7 @@ if (process.argv.includes('--selftest')) {
       rec.comment_first_seen ||= {};
       for(const s of signals)if(!prevSeen[s.id])rec.comment_first_seen[s.id] ||= nowIso();
       rec.last_checked = nowIso();
+      delete watch.pending_details?.[it.id];
       rec.review_version=REVIEW_VERSION;
       if(signals.some(s=>s.is_new&&s.in_window))rec.last_activity_at=nowIso();
       rec.url = 'https://www.xiaohongshu.com/explore/' + note.noteId;
@@ -436,6 +450,7 @@ if (process.argv.includes('--selftest')) {
       const nd = signals.filter(s => s.is_new && (s.kind === 'demand-strong' || s.kind === 'demand-weak' || s.kind === 'poster')).length;
       console.log(`[${it.phase}] ${title.slice(0, 22) || '(无标题)'}｜窗口:${inWin(note.time) ? 'Y' : 'N'}｜评论${comments.length}（新增${newCount}）｜其中需求向${nd}`);
     } catch (e) {
+      if(requestEvents.at(-1)?.endpoint==='detail')patrolHealth.detailResult(watch,it.id,{...requestEvents.at(-1),status:'failed'},config.retrieval);
       state.notes.push({ note_id: it.id, title: it.title, error: String(e.message), phase: it.phase });
       console.log(`[${it.phase}] ${(it.title || it.id).slice(0, 22)} → 放弃 ${e.message}`);
       state.warnings.push('详情读取失败：'+(it.title||'已跟踪帖子')+' / '+e.message);
@@ -446,6 +461,10 @@ if (process.argv.includes('--selftest')) {
     save();
   }
 
+  patrolHealth.updateQueryStats(watch,state);
+  state.unread_candidates_pending=Object.keys(watch.pending_details||{}).length;
+  if(state.unread_candidates_pending)state.warnings.push(`尚有${state.unread_candidates_pending}个搜索候选未成功读取详情，已保留到后续轮次`);
+  state.searches_unexecuted=searchPlan.filter(p=>!state.searches.some(s=>s.keyword===p.keyword&&s.sort_by===p.sort_by)).map(({keyword,category})=>({keyword,category}));
   watch.updated_at = nowIso();
   fs.writeFileSync(WATCH_PATH, JSON.stringify(watch, null, 2), { mode: 0o600 });
 

@@ -2,6 +2,7 @@
 const fs=require('node:fs'),path=require('node:path');
 const {render,fingerprint}=require('./concise-message.cjs');
 const {assertSameKeys}=require('./delivery-integrity.cjs');
+const presentation=require('./lead-presentation.cjs');
 const norm=s=>String(s).replace(/\\/g,'').replace(/\s/g,'');
 function smartpageId(url){
  const u=new URL(url),match=u.pathname.match(/^\/smartpage\/(a1_[A-Za-z0-9_-]+)$/);
@@ -9,9 +10,11 @@ function smartpageId(url){
  return match[1];
 }
 function buildDocument(pending,scan,config,now=Date.now(),blocked=0){
- const groups=render({pending,scan,config,now,maxItems:100000,maxBytes:1024*1024});
+ const groups=render({pending,scan,config,now,maxItems:100000,maxBytes:1024*1024,showTiming:config.document_layout?.show_lead_timing});
+ const layout=config.document_layout?.enabled?presentation.describe(pending,now):null;
  assertSameKeys(pending.map(x=>x.key),groups.flatMap(x=>x.keys));
  let body=groups.map(x=>x.content).join('\n');
+ if(layout)body=body.replace(/^### (客户直接求租帖|非同行帖子评论)$/gm,'### 主要线索｜$1').replace(/^### 同行帖子评论$/gm,layout.supplemental_count?'### 补充线索｜同行帖子评论':'### 主要线索｜同行帖子评论');
  const rows=body.split('\n').filter(x=>/^- (正文|主评论|楼中楼|更正|状态更新)｜/.test(x));
  if(rows.length!==pending.length)throw Error('文档线索数量核对失败');
  // Follow the renderer's stable group order, but calculate counts from real records.
@@ -37,17 +40,32 @@ function buildDocument(pending,scan,config,now=Date.now(),blocked=0){
  const summary=`统计说明：本页共${statistics.length}个原帖链接、${demandCount}条求租线索，其中帖子需求${totals.notes}条、评论需求${totals.comments}条。${totals.updates||totals.corrections?`另有状态更新${totals.updates}条、更正${totals.corrections}条，不计入求租线索。`:''}一个链接下可包含多条需求，数量按收录的需求记录统计，不等于${demandCount}位独立客户，也不代表该帖全部评论。`;
  const stamp=new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',dateStyle:'short',timeStyle:'short'}).format(new Date(scan.started_at||now));
  const name=`小红书求租线索（${stamp}）`;
+ const freshness=config.document_layout?.show_lead_timing?require('./lead-timeliness.cjs').overview(pending,scan,config,now):null;
  const end=`本批文档整理完毕，共${pending.length}条；不代表全平台已覆盖。`;
- const content=`# ${name}\n\n本次新增推送 ${pending.length} 条，按原帖归组。日期为原文发布日期，历史需求及意图待确认标记保留。\n\n${body}\n${end}\n\n### 线索数量说明\n\n${summary}\n${blocked?'\n另有消息发送结果待确认，已停止自动重发。\n':''}`;
+ const content=`# ${name}\n\n本次新增推送 ${pending.length} 条，按原帖归组。日期为原文发布日期，历史需求及意图待确认标记保留。\n\n${freshness?freshness+'\n\n':''}${layout?layout.intro+'\n\n':''}${body}\n${layout&&config.document_layout?.followup_enabled!==false?'\n'+layout.followup+'\n':''}${end}\n\n### 线索数量说明\n\n${summary}\n${blocked?'\n另有消息发送结果待确认，已停止自动重发。\n':''}`;
  if(/<(?:script|iframe|object|embed|svg)\b|\bon\w+\s*=|javascript:|data:text\/html|vbscript:/i.test(content))throw Error('文档内容安全检查未通过，未写入');
  const keys=pending.map(x=>x.key),id=fingerprint(content,keys);
- return {name,content,keys,rows,end,id,statistics,summary,links:[...content.matchAll(/\]\((https:\/\/www\.xiaohongshu\.com\/[^\s)]+)\)/g)].map(x=>x[1])};
+ return {name,content,keys,rows,end,id,statistics,summary,...(layout?{layout_version:2,presentation:layout.rows,category_counts:layout.category_counts,supplemental_count:layout.supplemental_count}:{}),links:[...content.matchAll(/\]\((https:\/\/www\.xiaohongshu\.com\/[^\s)]+)\)/g)].map(x=>x[1])};
 }
 function verifyDocument(doc,content){
- const text=norm(content),counts=new Map();
+ const text=norm(content),counts=new Map(),actual=new Map();
  for(const line of doc.rows){const key=norm(line.slice(2));counts.set(key,(counts.get(key)||0)+1);}
- for(const [line,count] of counts)if(text.split(line).length-1!==count)throw Error('文档读回原文遗漏或重复，未发群');
- for(const line of doc.content.split('\n').filter(x=>/^\s+位置：/.test(x)))if(!text.includes(norm(line)))throw Error('文档父评论定位缺失，未发群');
+ // Compare complete record lines. A quote with an extra intent label is a
+ // distinct rendered row; substring counting falsely counts both as one quote.
+ // Manual-review rows are separate evidence and must not satisfy valid rows.
+ let reviewDepth=0;
+ for(const line of String(content).split('\n')){
+  const heading=line.match(/^\s*(#{1,6})\s+(.+)$/);
+  if(heading){
+   if(/^待核实候选/.test(heading[2]))reviewDepth=heading[1].length;
+   else if(reviewDepth&&heading[1].length<=reviewDepth)reviewDepth=0;
+  }
+  if(reviewDepth)continue;
+  const row=line.match(/^\s*-\s+((?:正文|主评论|楼中楼|更正|状态更新)｜.*)$/);
+  if(row){const key=norm(row[1]);actual.set(key,(actual.get(key)||0)+1);}
+ }
+ for(const [line,count] of counts)if(actual.get(line)!==count)throw Error('文档读回原文遗漏或重复，未发群');
+ for(const line of doc.content.split('\n').filter(x=>/^\s+(位置：|发布时间：)/.test(x)))if(!text.includes(norm(line)))throw Error('文档定位或时间信息缺失，未发群');
  if(!text.includes(norm(doc.end)))throw Error('文档末尾不完整，未发群');
  const labels=new Map();for(const stat of doc.statistics||[])labels.set(norm(stat.label),(labels.get(norm(stat.label))||0)+1);
  for(const [label,count] of labels)if(text.split(label).length-1!==count)throw Error('文档分组统计遗漏或重复，未发群');

@@ -1,14 +1,17 @@
 {
   "name": "duoyin-bot",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Hermes + DeepSeek + Enterprise WeChat + read-only Xiaohongshu rental lead patrol",
   "scripts": {
-    "test": "bash scripts/init-example-state.sh && node mcp-readonly.test.cjs && node demand-validity.test.cjs && node rental-strategy.test.cjs && node hot-pools.test.cjs && node concise-message.test.cjs && node deepseek-review.test.cjs && node document-delivery.test.cjs && node daily-document-delivery.test.cjs && node attachment-delivery.test.cjs && node batch-completion.test.cjs && node review-isolation.test.cjs && .venv/bin/python3 -m unittest patrol_control_test.py",
+    "test": "bash scripts/test.sh",
     "doctor": "bash scripts/doctor.sh",
     "run": "node run-four-hour.cjs"
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "playwright": "1.61.1"
   }
 }

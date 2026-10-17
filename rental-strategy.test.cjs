@@ -38,7 +38,7 @@ test('new candidates alternate categories instead of filling slots with the firs
  const selected=freshPicks(items,12);assert.deepEqual(selected.slice(0,3).map(x=>x.id),['c','p0','l']);assert(!selected.some(x=>x.id==='known'));assert.equal(selected.length,12);
 });
 test('merchant comment sources stay capped and source category never overwrites explicit title category',()=>{
- const a=Array.from({length:10},(_,i)=>({id:i,title:'相机出租',merchant:true}));assert.equal(freshPicks(a,12).length,2);
+ const a=Array.from({length:10},(_,i)=>({id:i,title:'相机出租',merchant:true}));assert.equal(freshPicks(a,12,{include_peer_leads:true}).length,2);
  const b=[{id:'phone',title:'vivo X300Ultra',category:'镜头'},{id:'lens',title:'RF100-400',category:'镜头'}];assert.equal(freshPicks(b,12)[0].id,'phone');
 });
 test('new posts start before hot reads and all queues survive scheduling without duplicate details',()=>{
@@ -89,4 +89,21 @@ test('a failed recent attempt cannot permanently starve untouched old posts',()=
  const old=new Date(Date.now()-10*86400000).toISOString();
  const notes={failed:{token:'test',last_checked:old,last_attempted:new Date().toISOString()},untouched:{token:'test',last_checked:old}};
  assert.equal(rechecks(notes,1)[0].id,'untouched');
+});
+
+test('retired search models match phone aliases exactly and preserve X100VI',()=>{
+ const {excludedSearchModel}=require('./rental-strategy.cjs'),settings={excluded_search_models:['17pm','X100V']};
+ for(const word of ['求租17pm','iPhone 17 Pro Max 哪里租','苹果17PM','想租富士 X100V','Fujifilm X100V'])assert(excludedSearchModel(word,settings),word);
+ for(const word of ['求租 X100VI','富士 X100VI','iPhone 17 Pro','iPhone 16 Pro Max','RX100M7'])assert(!excludedSearchModel(word,settings),word);
+ const rows=[{category:'富士X100',combination:'富士X100V'},{category:'富士X100',combination:'富士X100VI'},{category:'手机',combination:'iPhone 17 Pro Max'},{category:'手机',combination:'vivo X300U'}];
+ const pools=buildModelPools(rows,settings);
+ assert.deepEqual(pools['相机'],['富士X100VI']);assert.deepEqual(pools['手机'],['vivo X300U']);
+ // A fresh workbook containing discontinued rows must not re-enable queries.
+ assert.deepEqual(buildModelPools(JSON.parse(JSON.stringify(rows)),settings),pools);
+});
+test('all inventory rotations exclude retired models and keep the retained successor',()=>{
+ const {excludedSearchModel}=require('./rental-strategy.cjs');const state={},seen=new Set();
+ for(let i=0;i<300;i++)for(const query of queries(state)){assert(!excludedSearchModel(query.keyword),query.keyword);seen.add(query.model);}
+ assert([...seen].some(x=>/x100vi/i.test(x)));
+ assert(![...seen].some(x=>/^富士X100$/i.test(x||'')));
 });

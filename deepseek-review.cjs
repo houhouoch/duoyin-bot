@@ -1,7 +1,7 @@
 const fs=require('node:fs');
 const path=require('node:path');
 const crypto=require('node:crypto');
-const {config,merchant,insufficientComment}=require('./lead-fields.cjs');
+const {config,merchant,insufficientComment,peerExcluded}=require('./lead-fields.cjs');
 const {compare}=require('./rental-strategy.cjs');
 const base=__dirname,revision='rental-intent-v3';
 const credentials=process.env.DEEPSEEK_CONFIG||path.join(process.env.HERMES_MONITOR_HOME||path.join(require('node:os').homedir(),'.hermes/profiles/xhs-rental-monitor'),'private/deepseek.json');
@@ -37,11 +37,11 @@ const prompt=`你是相机、手机、镜头及摄影相关设备求租线索分
 特别注意：客户求租帖下，别人直接列出机型和价格、没有询问，是商家报价supply，不是客户需求。示例：r50+18-45三天一共128，是商家报价；26号租rf100400多少钱，是客户询价inquiry。不能仅因出现机型、租期或租字就判demand。询问别人需要什么机型、介意哪里发货、是否租到并介绍自己门店，也属于supply。
 输出json且只使用这个格式：{"decision":"demand|inquiry|supply|resolved|irrelevant|uncertain","evidence":"subject中的连续原文引文，最多300字","device":"subject中的设备原文或未知","location":"subject中的地点原文或未知","rental_period":"subject中的租期原文或未知"}。
 所有字段必须逐字出现在subject中，否则填未知。不把IP所在地、帖作者城市当评论客户地点。不推算相对日期，不把镜头数值猜成日期。`;
-async function request(source,mode,c,fetcher=fetch,budget){
+async function request(source,mode,c,fetcher=fetch,budget,repair=''){
  if(budget&&(Date.now()>=budget.deadline||budget.cost_usd+0.025>budget.max_usd))throw new Error('DeepSeek本轮耗时或费用预算已达上限');
  if(budget){budget.cost_usd+=0.025;budget.requests++;}
  let response;
- try{response=await fetcher(c.base_url+'/chat/completions',{method:'POST',redirect:'error',headers:{Authorization:'Bearer '+c.api_key,'Content-Type':'application/json'},body:JSON.stringify({model:c.model,thinking:{type:mode==='low'?'enabled':'disabled'},...(mode==='low'?{reasoning_effort:'low'}:{}),max_tokens:mode==='low'?4096:1024,response_format:{type:'json_object'},messages:[{role:'system',content:prompt},{role:'user',content:JSON.stringify(source)}]}),signal:AbortSignal.timeout(Math.max(1,Math.min(45000,budget?budget.deadline-Date.now():45000)))});}catch{throw new Error(budget&&Date.now()>=budget.deadline?'DeepSeek本轮耗时预算已达上限':'DeepSeek连接失败或超时');}
+ try{response=await fetcher(c.base_url+'/chat/completions',{method:'POST',redirect:'error',headers:{Authorization:'Bearer '+c.api_key,'Content-Type':'application/json'},body:JSON.stringify({model:c.model,thinking:{type:mode==='low'?'enabled':'disabled'},...(mode==='low'?{reasoning_effort:'low'}:{}),max_tokens:mode==='low'?4096:1024,response_format:{type:'json_object'},messages:[{role:'system',content:prompt+(repair?'\n上次输出未通过校验，错误类别：'+repair+'。evidence必须复制subject中的连续原文；device、location、rental_period只可复制subject中完整连续的字面片段，否则填未知。不得扩写别名、从context取值或自行推算日期。':'')},{role:'user',content:JSON.stringify(source)}]}),signal:AbortSignal.timeout(Math.max(1,Math.min(45000,budget?budget.deadline-Date.now():45000)))});}catch{throw new Error(budget&&Date.now()>=budget.deadline?'DeepSeek本轮耗时预算已达上限':'DeepSeek连接失败或超时');}
  if(!response.ok)throw new Error('DeepSeek HTTP '+response.status);
  let j;
  try{j=await response.json();}catch(e){if(e instanceof SyntaxError)throw candidateError('INVALID_RESPONSE_JSON');throw new Error('DeepSeek响应读取失败或超时');}
@@ -52,11 +52,11 @@ async function request(source,mode,c,fetcher=fetch,budget){
  let raw;try{raw=JSON.parse(choice.message.content);}catch{throw candidateError('INVALID_CONTENT_JSON');}
  return {result:validate(raw,source),usage};
 }
-async function classify(x,c,fetcher,budget){
+async function classify(x,c,fetcher,budget,repair=''){
  const source=input(x);if(!source.subject.trim())throw new Error('DeepSeek复核缺少原文');
- let answer=await request(source,'none',c,fetcher,budget),mode='none';
+ let answer=await request(source,'none',c,fetcher,budget,repair),mode='none';
  if(answer.result.decision==='uncertain'){
-  const second=await request(source,'low',c,fetcher,budget);mode='low';
+  const second=await request(source,'low',c,fetcher,budget,repair);mode='low';
   for(const k of Object.keys(answer.usage))second.usage[k]+=answer.usage[k];answer=second;
  }
  return {...answer.result,usage:answer.usage,mode,model:c.model,revision,input_hash:hash(x),reviewed_at:new Date().toISOString()};
@@ -67,14 +67,19 @@ function queueCompare(a,b){
  const age=x=>Date.parse(x.first_discovered_at||'')||0;
  return age(a)-age(b)||compare(a,b);
 }
-async function reviewQueue(watch,history,cache,c,{batchSize=24,fetcher,budget,checkpoint=()=>{}}={}){
+async function reviewQueue(watch,history,cache,c,{batchSize=24,fetcher,budget,checkpoint=()=>{},peerSettings=config.delivery_priority,uncertainKeys=new Set()}={}){
  if(!Number.isInteger(batchSize)||batchSize<1)throw new Error('复核批次大小必须为正整数');
  watch.outbox ||= {};watch.suppressed ||= {};cache.items ||= {};
- const stats={reviewed:0,cached:0,suppressed:0,skipped_sent:0,deferred:0,expired:0,batches:0,budget_limited:false,failed_candidates:0,failures:[]};let dirty=false,calls=0;
+ const stats={reviewed:0,cached:0,suppressed:0,skipped_sent:0,deferred:0,expired:0,batches:0,budget_limited:false,failed_candidates:0,cooldown_candidates:0,manual_review_candidates:0,failures:[]};let dirty=false,calls=0;
  const start=Math.floor((Date.now()+8*3600000)/86400000)*86400000-8*3600000-(config.freshness_calendar_days-1)*86400000;
  for(const [key,x] of Object.entries(watch.outbox).sort((a,b)=>queueCompare(a[1],b[1]))){
   if(!['note','comment'].includes(x.type))continue;
   if(history.sent?.[key]){delete watch.outbox[key];dirty=true;stats.skipped_sent++;continue;}
+  if(peerExcluded(x,watch,new Map(),peerSettings)){
+   // Preserve records whose previous send result is unknown without reviewing them.
+   if(uncertainKeys.has(key)){stats.peer_quarantined=(stats.peer_quarantined||0)+1;continue;}
+   watch.suppressed[key]={...x,reason:'用户停用同行来源线索，未纳入',suppressed_at:new Date().toISOString()};delete watch.outbox[key];dirty=true;stats.suppressed++;continue;
+  }
   const time=x.comment?.published_at_ms||x.published_at_ms;
   if(Number.isFinite(time)&&time<start){watch.suppressed[key]={...x,reason:'超过近期窗口，未推送',suppressed_at:new Date().toISOString()};delete watch.outbox[key];dirty=true;stats.expired++;continue;}
   if(!Number.isFinite(time)||time>Date.now()){stats.deferred++;continue;}
@@ -86,15 +91,21 @@ async function reviewQueue(watch,history,cache,c,{batchSize=24,fetcher,budget,ch
   if(review){try{validate(review,input(x));}catch(e){if(!e.candidate_error)throw e;delete cache.items[id];delete x.ai_review;review=null;dirty=true;}}
   if(review){validate(review,input(x));stats.cached++;}
   else if(budget&&(Date.now()>=budget.deadline||budget.cost_usd+0.05>budget.max_usd)){stats.deferred++;stats.budget_limited=true;continue;}
+  else if(x.ai_review_error?.input_hash===id&&(x.ai_review_error.manual_review_required||Date.parse(x.ai_review_error.next_retry_at||'')>Date.now())){
+   stats.deferred++;stats.cooldown_candidates++;if(x.ai_review_error.manual_review_required)stats.manual_review_candidates++;continue;
+  }
   else{
    // One retry per candidate; failures keep the outbox intact for the next run.
    try{
-    try{review=await classify(x,c,fetcher,budget);}catch(e){if(/预算|HTTP (?:400|401|402|403|404)/.test(e.message))throw e;review=await classify(x,c,fetcher,budget);}
+    try{review=await classify(x,c,fetcher,budget);}catch(e){if(/预算|HTTP (?:400|401|402|403|404)/.test(e.message))throw e;review=await classify(x,c,fetcher,budget,e.candidate_error?e.code:'');}
    }catch(e){
     if(/预算/.test(e.message)){stats.deferred++;stats.budget_limited=true;continue;}
     if(!e.candidate_error)throw e;
     // Keep only an enumerated diagnostic, never raw model output or credentials.
-    x.ai_review_error={code:e.code,input_hash:id,at:new Date().toISOString(),attempts:2};
+    const previous=x.ai_review_error?.input_hash===id?x.ai_review_error.failed_rounds||1:0;
+    const failedRounds=previous+1,threshold=config.deepseek_review?.failed_rounds_before_manual||2;
+    x.ai_review_error={code:e.code,input_hash:id,at:new Date().toISOString(),attempts:2,failed_rounds:failedRounds,next_retry_at:new Date(Date.now()+(config.deepseek_review?.failure_cooldown_hours||24)*3600000).toISOString(),manual_review_required:failedRounds>=threshold};
+    if(x.ai_review_error.manual_review_required)stats.manual_review_candidates++;
     delete x.ai_review;delete cache.items[id];dirty=true;stats.deferred++;stats.failed_candidates++;
     stats.failures.push({input_hash:id,code:e.code});await checkpoint(stats);continue;
    }
@@ -117,9 +128,11 @@ if(require.main===module){
   if(!config.deepseek_review?.enabled){console.log(JSON.stringify({status:'disabled'}));return;}
   const wpath=path.join(base,'watchlist.json'),cpath=path.join(base,'deepseek-review-cache.json');
   const watch=load(wpath,{}),cache=load(cpath,{items:{}}),history=load(path.join(base,'leads-history.json'),{});
+  const delivery=load(path.join(base,'four-hour-delivery.json'),{});
+  const uncertainKeys=new Set(Object.values(delivery.batches||{}).filter(x=>['attempting','uncertain'].includes(x.status)).flatMap(x=>x.keys||[]));
   const started=Date.now(),budget={deadline:started+(config.deepseek_review.max_seconds||480)*1000,max_usd:config.deepseek_review.max_estimated_usd||0.15,cost_usd:0,tokens:0,requests:0};
   try{
-   const {stats,dirty}=await reviewQueue(watch,history,cache,credential(),{batchSize:config.deepseek_review.batch_size||24,budget,checkpoint:()=>{save(cpath,cache);save(wpath,watch);}});
+   const {stats,dirty}=await reviewQueue(watch,history,cache,credential(),{batchSize:config.deepseek_review.batch_size||24,budget,uncertainKeys,checkpoint:()=>{save(cpath,cache);save(wpath,watch);}});
    if(dirty){save(cpath,cache);save(wpath,watch);}
    save(path.join(base,'deepseek-last-review.json'),{status:stats.deferred?'partial':'completed',started_at:new Date(started).toISOString(),completed_at:new Date().toISOString(),...stats,requests:budget.requests,tokens:budget.tokens,estimated_usd:budget.cost_usd});
    console.log(JSON.stringify({status:'reviewed',...stats}));

@@ -4,6 +4,21 @@ const catalog=JSON.parse(fs.readFileSync(path.join(__dirname,'camera-catalog.jso
 const devices=catalog.devices||config.devices;
 const normalize=s=>String(s||'').toLowerCase().replace(/[\s+＋➕\-—_（）()]/g,'');
 const escape=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+// Search exclusions survive the daily read-only inventory refresh.
+// They do not erase historical records or reinterpret collected quotations.
+function searchAliases(model){
+ const value=normalize(model).replace(/^(?:苹果|iphone|富士|fujifilm)/,'');
+ if(['17pm','17promax'].includes(value))return ['17pm','17promax','iphone17pm','iphone17promax','苹果17pm','苹果17promax'];
+ return value==='x100v'?['x100v','fujifilmx100v']:[value];
+}
+function excludedSearchModel(text,settings=config.retrieval||{}){
+ const value=normalize(text);
+ return (settings.excluded_search_models||[]).some(model=>searchAliases(model).some(alias=>alias&&new RegExp('(?<![a-z0-9])'+escape(alias)+'(?![a-z0-9])','i').test(value)));
+}
+function excludedFamilyHeading(text,settings=config.retrieval||{}){
+ const value=normalize(text).replace(/^(?:苹果|iphone|富士|fujifilm)/,'');
+ return value.length>=3&&(settings.excluded_search_models||[]).some(model=>searchAliases(model).some(alias=>alias!==value&&alias.startsWith(value)));
+}
 const aliases={rx100m7:['黑卡7'],rx10m4:['胖卡4'],r62:['r6ii','r6二代'],r52:['r5ii','r5二代'],x200u:['x200ultra'],x300u:['x300ultra'],x300pro:['x300p'],pocket3:['p3'],pocket4:['p4'],pocket4pro:['4p','pocket4p']};
 function terms(row){
  const raw=[row.category,...row.combination.split(/[+＋➕/]/)].map(s=>s.replace(/（[^）]*）|\([^)]*\)/g,'').replace(/单租|机身|镜头|超长焦|多种卡口|系列/g,'').trim());
@@ -14,7 +29,7 @@ const indexed=devices.map(row=>({...row,terms:terms(row)}));
 const queryModels=[...new Set(indexed.flatMap(row=>{
  const category=row.category.replace(/（[^）]*）/g,'').replace(/系列|多种卡口|超长焦/g,'').trim();
  return /[a-z0-9]/i.test(category)?[category]:row.terms.filter(t=>t.length>=3).slice(0,2);
-}))];
+}))].filter(model=>!excludedSearchModel(model)&&!excludedFamilyHeading(model));
 function inventoryMatches(text){
  const n=String(text||'').toLowerCase().replace(/[\s\-—_（）()]/g,'');
  return indexed.filter(row=>row.terms.some(t=>{const v=normalize(t);return new RegExp('(?<![a-z0-9])'+escape(v)+'(?![a-z0-9])','i').test(n);})).slice(0,5).map(({category,combination,source_row})=>({category,combination,source_row}));
@@ -42,11 +57,11 @@ function queries(state){
   }
  }
  for(const category of ordered){
-  const words=settings.discovery_queries?.[category]||['求租 '+category];
+  const words=settings.direct_discovery_queries?.[category]||settings.discovery_queries?.[category]||['求租 '+category];
   plan.push({keyword:words[round%words.length],kind:'discovery',category});
  }
  state.diversity_round=round+1;
- return plan.filter((x,i,a)=>a.findIndex(y=>y.keyword===x.keyword)===i).slice(0,config.max_searches_per_run||6);
+ return plan.filter((x,i,a)=>!excludedSearchModel(x.keyword)&&a.findIndex(y=>y.keyword===x.keyword)===i).slice(0,config.max_searches_per_run||6);
 }
 
 // Categories are scheduling hints, never inferred customer equipment fields.
@@ -75,14 +90,17 @@ function roundRobin(rows,key,order=[]){
  const out=[];for(let i=0;[...groups.values()].some(g=>g.length>i);i++)for(const g of groups.values())if(g[i])out.push(g[i]);
  return out;
 }
-function buildModelPools(rows){
+function buildModelPools(rows,settings=config.retrieval||{}){
  const pools={'相机':[],'手机':[],'镜头':[]},seen=new Set();
  for(const row of rows){
+  if(excludedSearchModel(row.combination,settings))continue;
   // Include each combination's body, not just a shared heading (e.g. 旅拍系列).
-  const candidates=[...row.category.split('/'),row.combination.split(/[+＋➕]/)[0]];
-  for(let t of candidates){
+  const headings=row.category.split('/'),candidates=[...headings,row.combination.split(/[+＋➕]/)[0]];
+  for(const [index,raw] of candidates.entries()){
+   let t=raw;
    t=t.replace(/（[^）]*）|\([^)]*\)/g,'').replace(/单租|单机身|机身|镜头|超长焦|系列/g,'').trim();
    t=t.replace(/\s*(?:套装|套机头|需要内存卡|富士口|索尼口|佳能RF口|多种卡口|外变焦|内变焦).*$/,'').trim();
+   if(excludedSearchModel(t,settings)||(index<headings.length&&excludedFamilyHeading(t,settings)))continue;
    if(/支架|云台|补光|神牛|^V\d|^AD\d|优篮子|^FY\d|多款|多种/i.test(t)||!/[a-z].*\d|\d.*[a-z]|Luna Ultra|(?:适马|腾龙)\d/i.test(t))continue;
    const category=categoryOf(t)||categoryOf(row.category);if(!category)continue;
    const n=normalize(t).replace(/^(佳能|索尼|尼康|富士|理光|松下|大疆|vivo|三星)/,'').replace(/^x300p$/,'x300pro').replace(/^(x[23]00)ultra$/,'$1u');
@@ -93,13 +111,21 @@ function buildModelPools(rows){
  return pools;
 }
 const modelPools=buildModelPools(devices);
-function freshPicks(items,limit){
- const rows=items.filter(x=>!x.known).sort((a,b)=>Number(b.demand)-Number(a.demand)||Number(b.inventory_match)-Number(a.inventory_match));
+function freshPicks(items,limit,settings=config.delivery_priority||{}){
+ const rows=items.filter(x=>!x.known&&(settings.include_peer_leads!==false||!x.merchant)).sort((a,b)=>Number(b.demand)-Number(a.demand)||Number(b.inventory_match)-Number(a.inventory_match));
  // Merchant posts are only limited comment sources; they are not customer leads.
  let merchants=0;const eligible=rows.filter(x=>!x.merchant||x.demand||merchants++<2);
  return roundRobin(eligible,x=>categoryOf(x.title)||x.category||'未知',['相机','手机','镜头']).slice(0,limit);
 }
-function searchOrder(latest,hotPlans){
+function searchOrder(latest,hotPlans,stats={}){
+ if(config.retrieval?.prefer_direct_discovery&&latest.some(x=>x.category)){
+  const categories=[...new Set(latest.map(x=>x.category))],first=[],used=new Set();
+  const discovery=latest.filter(x=>(x.query_kind||x.kind)==='discovery');
+  const score=x=>{const s=stats[x.keyword];return s?.attempts?(s.demand_candidates||0)/Math.max(1,s.details_read||0)-Math.min(1,(s.elapsed_ms||0)/s.attempts/120000):0;};
+  discovery.sort((a,b)=>score(b)-score(a));for(const x of discovery){first.push(x);used.add(x.keyword);}
+  for(const category of categories){const x=latest.find(p=>p.category===category&&(p.query_kind||p.kind)==='inventory');if(x){first.push(x);used.add(x.keyword);}}
+  return [...first,...latest.filter(x=>!used.has(x.keyword)),...hotPlans];
+ }
  // Each category's inventory search precedes refresh work. At most one hot
  // category refresh per round is configured separately, without raising rate.
  return [...latest.slice(0,3),...hotPlans,...latest.slice(3)];
@@ -140,7 +166,9 @@ function familyCap(rows,settings){
  }
  return {selected:rows.filter(x=>!deferred.has(x.key)),deferred:rows.filter(x=>deferred.has(x.key))};
 }
-function deliveryPicks(items,settings=config.delivery_priority||{}){
+function deliveryPicks(items,settings=config.delivery_priority||{},now=Date.now()){
+ const excluded=settings.include_peer_leads===false?items.filter(x=>['peer','peer-note'].includes(sourceLane(x))):[];
+ if(excluded.length){const keys=new Set(excluded.map(x=>x.key));items=items.filter(x=>!keys.has(x.key));}
  const maxPerSource=Number(settings.max_records_per_source_per_run)||5;
  const sourceCounts=new Map(),deferred=[];
  const takeSourceLimited=rows=>rows.filter(row=>{
@@ -154,9 +182,10 @@ function deliveryPicks(items,settings=config.delivery_priority||{}){
  const nonPeer=balanced.selected;
  const peerSources=new Set(),peer=[];
  const ratio=Math.min(0.5,Math.max(0,Number(settings.peer_max_share)||0.2));
- const peerLimit=ratio<1?Math.floor(nonPeer.length*ratio/(1-ratio)):0;
+ const supplementalLimit=Math.max(0,Math.min(100,Number(settings.supplemental_max_per_run)||50));
+ const peerLimit=Math.min(ratio<1?Math.floor(nonPeer.length*ratio/(1-ratio)):0,settings.supplemental_enabled?supplementalLimit:Infinity);
  const maxPeerSources=Number(settings.max_peer_sources_per_run)||2;
- for(const row of diversityOrder(items.filter(x=>sourceLane(x)==='peer'))){
+ for(const row of diversityOrder(items.filter(x=>sourceLane(x)==='peer'&&!settings.supplemental_enabled))){
   if(peer.length>=peerLimit){deferred.push(row);continue;}
   if(!peerSources.has(row.note_id)&&peerSources.size>=maxPeerSources){deferred.push(row);continue;}
   const count=sourceCounts.get(row.note_id)||0;
@@ -168,7 +197,32 @@ function deliveryPicks(items,settings=config.delivery_priority||{}){
  // retain the evidence separately.
  deferred.push(...items.filter(x=>sourceLane(x)==='peer-note'));
  const statuses=items.filter(x=>sourceLane(x)==='status');
- return {selected:[...nonPeer,...peer,...statuses],deferred:[...new Map(deferred.map(x=>[x.key,x])).values()]};
+ let supplemental=[];
+ if(settings.supplemental_enabled){
+  const limit=supplementalLimit;
+  const selectedKeys=new Set([...nonPeer,...peer,...statuses].map(x=>x.key));
+  const oldest=(a,b)=>(a.comment?.published_at_ms||a.published_at_ms||0)-(b.comment?.published_at_ms||b.published_at_ms||0)||String(a.key).localeCompare(String(b.key));
+  const start=require('./hot-pools.cjs').start(config.recent_priority_calendar_days||3,now);
+  const recent=x=>{const t=x.comment?.published_at_ms||x.published_at_ms;return Number.isFinite(t)&&t>=start&&t<=now;};
+  const rows=items.filter(x=>sourceLane(x)==='peer');
+  const fresh=diversityOrder(rows.filter(recent)),history=rows.filter(x=>!recent(x)).sort(oldest);
+  const recentSlots=Math.ceil(limit*Math.min(1,Math.max(0,settings.recent_supplemental_share??0.7)));
+  const take=(queue,count)=>{
+   let n=0;for(const row of queue){
+    if(n>=count||supplemental.length>=limit)break;
+    if(selectedKeys.has(row.key))continue;
+    const used=sourceCounts.get(row.note_id)||0;if(used>=maxPerSource)continue;
+    sourceCounts.set(row.note_id,used+1);selectedKeys.add(row.key);supplemental.push({...row,delivery_lane:'supplemental'});n++;
+   }
+  };
+  // Reserve both recent and historical capacity; unused slots can be borrowed.
+  take(fresh,recentSlots);take(history,limit-recentSlots);take(fresh,limit);take(history,limit);
+  deferred.push(...rows.filter(x=>!selectedKeys.has(x.key)));
+  const chosen=new Set([...peer,...supplemental].map(x=>x.key));
+  for(let i=deferred.length-1;i>=0;i--)if(chosen.has(deferred[i].key))deferred.splice(i,1);
+ }
+ const peers=settings.supplemental_enabled?peer.map(x=>({...x,delivery_lane:'supplemental'})):peer;
+ return {excluded,selected:[...nonPeer,...peers,...supplemental,...statuses],supplemental:peers.length+supplemental.length,deferred:[...new Map(deferred.map(x=>[x.key,x])).values()]};
 }
 function presentationOrder(items){
  const direct=diversityOrder(items.filter(x=>sourceLane(x)==='direct'));
@@ -185,4 +239,4 @@ function rechecks(notes,limit){
  return [...picked,...rows.filter(([id])=>!ids.has(id)).sort(oldest)].slice(0,limit).map(([id,v])=>({id,token:v.token,title:v.title||'',recheck:true}));
 }
 function broadCandidate(text){return /租|借|求|蹲|有.{0,16}(吗|么)|how\s*much|多少|什么价|问问/i.test(text)&&!/招聘|租房|办公室|汽车租赁/.test(text);}
-module.exports={devices,queryModels,inventoryMatches,subject,tier,compare,queries,rechecks,broadCandidate,categoryOf,familyOf,modelPools,buildModelPools,freshPicks,searchOrder,detailOrder,deliveryPicks,presentationOrder,sourceLane};
+module.exports={devices,queryModels,inventoryMatches,subject,tier,compare,queries,rechecks,broadCandidate,categoryOf,familyOf,modelPools,buildModelPools,excludedSearchModel,freshPicks,searchOrder,detailOrder,deliveryPicks,presentationOrder,sourceLane};

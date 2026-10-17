@@ -127,11 +127,11 @@ def login_ready():
 
 @server.tool()
 def patrol_rerun(confirm: bool) -> dict:
-    """仅在用户明确要求重跑/开始巡检时调用，confirm=true。触发原Hermes任务并发到已配置企业微信群；复用全部历史去重，不改定时计划。已有任务则不重复启动。根据结果区分started、dispatch_pending、paused、already_running、failed，不能只凭调用就说已完成。"""
+    """仅在用户明确要求重跑/开始巡检时调用，confirm=true。触发原Hermes任务并发到配置的目标群；复用全部历史去重，不改定时计划。已有任务则不重复启动。根据结果区分started、dispatch_pending、paused、already_running、failed，不能只凭调用就说已完成。"""
     if confirm is not True:
         return {'status': 'not_started', 'reason': '需要用户明确要求重跑'}
     if not JOB:
-        return {'status': 'not_started', 'reason': '未设置 HERMES_XHS_JOB_ID，请先创建 Hermes cron 任务'}
+        return {'status': 'not_configured', 'reason': '请在本机配置 HERMES_XHS_JOB_ID'}
     os.umask(0o077)
     with (BASE / 'chat-rerun.lock').open('a') as guard:
         fcntl.flock(guard, fcntl.LOCK_EX)

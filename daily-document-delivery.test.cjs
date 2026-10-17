@@ -37,7 +37,7 @@ function fixture(t){
   if(control.timeout===cmd){control.timeout=null;throw Error('timeout after mutation');}
   return JSON.stringify(r);
  };
- const run=(doc,start=first,extra={})=>publishDailyDocument(doc,{cli,delivery,save(){},base,join:'public',scan:{started_at:start,complete:true},...extra});
+ const run=(doc,start=first,extra={})=>publishDailyDocument(doc,{cli,delivery,save(){},base,join:'public',layout:{structure:'classified'},scan:{started_at:start,complete:true},...extra});
  return {base,delivery,docs,stats,control,calls,cli,run};
 }
 test('BJT date rollover and colon-free page names',()=>{
@@ -103,6 +103,16 @@ test('new scan recovers the original daily page and keeps fresh keys separate',t
  const before=f.stats.creates;f.run(resumed.documents[0].doc);assert.equal(f.stats.creates,before);
  const round=Object.values(f.delivery.daily_documents['2026-09-20'].rounds)[0];round.keys.push('missing');assert.throws(()=>resumeDailyDocuments([lead(1)],f.delivery,f.base),/部分记录/);
 });
+test('partially eligible old page is retained but only selected records enter a new round',t=>{
+ const f=fixture(t),old=build([1,2]);f.run(old);
+ const {resumeDailyDocuments}=require('./daily-document-delivery.cjs');
+ const resumed=resumeDailyDocuments([lead(1)],f.delivery,f.base,{outbox:{n2:lead(2)}});
+ assert.equal(resumed.documents.length,0);assert.deepEqual(resumed.fresh.map(x=>x.key),['n1']);
+ const prior=Object.values(f.delivery.daily_documents['2026-09-20'].rounds)[0];
+ assert(prior.delivery_superseded_at);assert.equal(prior.status,'verified');
+ const next='2026-09-20T08:00:00Z';const msg=f.run(build([1],next),next);
+ assert.deepEqual(msg.keys,['n1']);assert.equal(f.stats.creates,2);
+});
 
 function mockCliMain(){
  const fs=require('node:fs'),path=require('node:path');
@@ -128,8 +138,8 @@ function mockCliMain(){
 }
 test('unified sender: daily delivery, failed-send retry, no duplicates, quiet empty next round',t=>{
  const {execFileSync}=require('node:child_process'),dir=fs.mkdtempSync(path.join(os.tmpdir(),'xhs-daily-sender-'));t.after(()=>fs.rmSync(dir,{recursive:true}));
- for(const name of ['notify-four-hour.cjs','daily-document-delivery.cjs','document-delivery.cjs','delivery-integrity.cjs','concise-message.cjs','demand-validity.cjs','deepseek-review.cjs','lead-fields.cjs','rental-strategy.cjs','hot-pools.cjs','camera-catalog.json'])fs.copyFileSync(path.join(__dirname,name),path.join(dir,name));
- fs.writeFileSync(path.join(dir,'monitor-config.json'),JSON.stringify({...config,document_delivery:{enabled:true,join:'public',mode:'daily'},deepseek_review:{enabled:false}}));
+ for(const name of ['notify-four-hour.cjs','daily-document-delivery.cjs','document-delivery.cjs','lead-timeliness.cjs','lead-presentation.cjs','delivery-integrity.cjs','concise-message.cjs','demand-validity.cjs','deepseek-review.cjs','lead-fields.cjs','rental-strategy.cjs','hot-pools.cjs','camera-catalog.json'])fs.copyFileSync(path.join(__dirname,name),path.join(dir,name));
+ fs.writeFileSync(path.join(dir,'monitor-config.json'),JSON.stringify({...config,document_delivery:{enabled:true,join:'public',mode:'daily'},document_layout:{...config.document_layout,structure:'classified'},deepseek_review:{enabled:false}}));
  const now=Date.now(),rows=[1,2].map(i=>({...lead(i),published_at_ms:now-1000}));
  fs.writeFileSync(path.join(dir,'watchlist.json'),JSON.stringify({outbox:Object.fromEntries(rows.map(x=>[x.key,x]))}));
  fs.writeFileSync(path.join(dir,'wecom-cli'),'#!'+process.execPath+'\n('+mockCliMain.toString()+')();',{mode:0o700});
@@ -144,4 +154,26 @@ test('unified sender: daily delivery, failed-send retry, no duplicates, quiet em
  fs.writeFileSync(scan,JSON.stringify({started_at:new Date(now+60000).toISOString(),complete:true}));run({});
  assert.equal(cloud().messages.length,2);assert.equal(JSON.parse(fs.readFileSync(path.join(dir,'four-hour-last-delivery.json'))).status,'recorded_no_new');
  assert.equal(Object.keys(JSON.parse(fs.readFileSync(path.join(dir,'leads-history.json'))).sent).length,2);
+});
+
+test('failed readback resumes known writing page and keeps partial selection separate',t=>{
+ const f=fixture(t),doc=build([1,2]);f.run(doc);
+ const day=f.delivery.daily_documents['2026-09-20'],r=day.rounds[doc.id];
+ r.status='planned';f.delivery.documents[doc.id].status='writing';
+ const writes={...f.stats};let saves=0;
+ const result=require('./daily-document-delivery.cjs').resumeDailyDocuments([lead(1)],f.delivery,f.base,{outbox:{n2:lead(2)}},{cli:f.cli,save(){saves++;}});
+ assert.equal(r.status,'verified');assert(r.recovered_by_readback_at);assert(r.delivery_superseded_at);
+ assert.equal(f.delivery.documents[doc.id].status,'verified');assert.equal(saves,1);
+ assert.deepEqual(result.fresh.map(x=>x.key),['n1']);assert.deepEqual(f.stats,writes);
+ const next='2026-09-20T08:00:00Z';f.run(build([1],next),next);
+ assert.equal(f.stats.creates,2);
+});
+test('unfinished page recovery rejects dropped text, unknown pages and missing read tools',t=>{
+ const f=fixture(t),doc=build([1]);f.run(doc);
+ const day=f.delivery.daily_documents['2026-09-20'],r=day.rounds[doc.id];r.status='planned';
+ const resume=recovery=>require('./daily-document-delivery.cjs').resumeDailyDocuments([lead(1)],f.delivery,f.base,{},recovery);
+ assert.throws(()=>resume({}),/需读回原页/);
+ const p=f.docs[day.docid].pages[r.page_id];p.body=p.body.replace(doc.rows[0],'');
+ assert.throws(()=>resume({cli:f.cli}),/遗漏或重复/);assert.equal(r.status,'planned');assert(!r.delivery_superseded_at);
+ delete f.docs[day.docid].pages[r.page_id];assert.throws(()=>resume({cli:f.cli}),/页面层级/);
 });

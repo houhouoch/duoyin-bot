@@ -21,7 +21,7 @@ agent:
 mcp_servers:
   xhs_patrol:
     command: ${DUOYIN_PYTHON}
-    args: [${DUOYIN_HOME}/patrol-control-mcp.py]
+    args: ["${DUOYIN_HOME}/patrol-control-mcp.py"]
     timeout: 20
     connect_timeout: 15
     tools:

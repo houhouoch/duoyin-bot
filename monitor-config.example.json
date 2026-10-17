@@ -1,31 +1,169 @@
 {
   "version": 1,
-  "collaboration_agents": ["codex"],
+  "collaboration_agents": [
+    "codex"
+  ],
   "runtime_profile": "xhs-rental-monitor",
   "target_group": "测试线索群",
   "timezone": "Asia/Shanghai",
-  "schedule_hours": [0, 4, 8, 12, 16, 20],
+  "schedule_hours": [
+    0,
+    4,
+    8,
+    12,
+    16,
+    20
+  ],
   "freshness_calendar_days": 10,
   "recent_priority_calendar_days": 3,
-  "keywords": ["免押租", "租金", "自提", "邮寄", "周末租", "旅游租", "演唱会", "镜头", "机身", "在哪租", "什么平台租"],
-  "queries": ["求租 相机", "想租相机", "相机 在哪租", "相机 什么平台租", "演唱会 租相机", "求租 手机", "演唱会 租手机", "求租 镜头"],
-  "model_terms": ["R50", "A6700", "X300U", "S23U", "Pocket3", "GR3", "70-350G", "100-400"],
+  "keywords": [
+    "免押租",
+    "租金",
+    "自提",
+    "邮寄",
+    "周末租",
+    "旅游租",
+    "演唱会",
+    "镜头",
+    "机身",
+    "在哪租",
+    "什么平台租"
+  ],
+  "queries": [
+    "求租 相机",
+    "想租相机",
+    "相机 在哪租",
+    "相机 什么平台租",
+    "演唱会 租相机",
+    "求租 手机",
+    "演唱会 租手机",
+    "求租 镜头"
+  ],
+  "model_terms": [
+    "R50",
+    "A6700",
+    "X300U",
+    "S23U",
+    "Pocket3",
+    "GR3",
+    "70-350G",
+    "100-400"
+  ],
   "merchant_author_ids": [],
   "merchant_names": [],
   "inventory_priority": true,
   "retrieval": {
-    "version": "balanced-keywords-v3",
-    "detail_mix": [5, 1, 1],
-    "inventory_templates": ["求租 {model}", "{model} 哪里租", "想租 {model}", "{model} 租一天多少钱"],
+    "version": "balanced-keywords-v4-freshness",
+    "detail_mix": [
+      5,
+      1,
+      1
+    ],
+    "inventory_templates": [
+      "求租 {model}",
+      "{model} 哪里租",
+      "想租 {model}",
+      "{model} 租一天多少钱"
+    ],
     "discovery_queries": {
-      "相机": ["求租 相机", "想租 富士", "租大疆", "租相机 推荐", "求租 卡片机", "相机 哪里租", "周末 租相机", "旅游 租相机"],
-      "手机": ["手机 短租", "求租 iPhone", "演唱会 租手机", "求租 三星", "租手机 推荐", "手机 哪里租"],
-      "镜头": ["求租 镜头", "镜头 哪里租", "租镜头 推荐", "求租 长焦镜头", "演唱会 租镜头"]
-    }
+      "相机": [
+        "求租 相机",
+        "想租 富士",
+        "租大疆",
+        "租相机 推荐",
+        "求租 卡片机",
+        "相机 怎么租",
+        "相机 哪里租",
+        "相机 哪个平台租",
+        "周末 租相机",
+        "旅游 租相机",
+        "演唱会 租相机",
+        "免押租 相机",
+        "租相机 自提",
+        "租相机 邮寄",
+        "相机 租金",
+        "求租 拍立得",
+        "求租 机身"
+      ],
+      "手机": [
+        "手机 短租",
+        "求租 iPhone",
+        "演唱会 租手机",
+        "求租 三星",
+        "租手机 推荐",
+        "手机 哪里租",
+        "手机 怎么租",
+        "免押租 手机",
+        "租手机 自提",
+        "租手机 邮寄",
+        "周末 租手机",
+        "手机 租金"
+      ],
+      "镜头": [
+        "求租 镜头",
+        "镜头 哪里租",
+        "租镜头 推荐",
+        "求租 长焦镜头",
+        "租镜头 多少钱",
+        "镜头 短租",
+        "演唱会 租镜头",
+        "免押租 镜头",
+        "租镜头 自提",
+        "租镜头 邮寄",
+        "周末 租镜头",
+        "镜头 租金"
+      ]
+    },
+    "prefer_direct_discovery": true,
+    "detail_timeout_ms": 90000,
+    "low_priority_detail_timeout_ms": 60000,
+    "failure_cooldown_hours": 2,
+    "direct_discovery_queries": {
+      "相机": [
+        "求租 相机",
+        "求租 卡片机",
+        "想租 相机"
+      ],
+      "手机": [
+        "求租 手机",
+        "求租 iPhone",
+        "求租 三星"
+      ],
+      "镜头": [
+        "求租 镜头",
+        "求租 长焦镜头",
+        "想租 镜头"
+      ]
+    },
+    "excluded_search_models": [
+      "17pm",
+      "X100V"
+    ]
   },
-  "deepseek_review": {"enabled": true, "batch_size": 24, "max_seconds": 480, "max_estimated_usd": 0.15},
-  "document_delivery": {"enabled": true, "join": "public", "mode": "daily"},
-  "delivery_priority": {"peer_max_share": 0.2, "max_peer_sources_per_run": 2, "max_records_per_source_per_run": 5, "model_family_soft_share": 0.3, "family_cap_minimum_candidates": 10},
+  "deepseek_review": {
+    "enabled": true,
+    "batch_size": 24,
+    "max_seconds": 480,
+    "max_estimated_usd": 0.15,
+    "failed_rounds_before_manual": 2,
+    "failure_cooldown_hours": 24
+  },
+  "document_delivery": {
+    "enabled": true,
+    "join": "public",
+    "mode": "daily"
+  },
+  "delivery_priority": {
+    "peer_max_share": 0,
+    "max_peer_sources_per_run": 0,
+    "max_records_per_source_per_run": 5,
+    "model_family_soft_share": 0.3,
+    "family_cap_minimum_candidates": 10,
+    "supplemental_enabled": false,
+    "supplemental_max_per_run": 0,
+    "recent_supplemental_share": 0.7,
+    "include_peer_leads": false
+  },
   "hot_pool": {
     "enabled": true,
     "per_category": 20,
@@ -34,8 +172,29 @@
     "inactive_recheck_hours": 12,
     "max_details_per_run": 60,
     "max_refresh_categories_per_run": 1,
-    "sorts": ["最多评论", "最多点赞"],
-    "queries": {"相机": ["租相机", "相机租赁", "租大疆", "租富士"], "手机": ["租手机", "演唱会租手机", "租 iPhone", "租三星"], "镜头": ["租镜头", "镜头租赁", "租长焦镜头"]}
+    "sorts": [
+      "最多评论",
+      "最多点赞"
+    ],
+    "queries": {
+      "相机": [
+        "租相机",
+        "相机租赁",
+        "租大疆",
+        "租富士"
+      ],
+      "手机": [
+        "租手机",
+        "演唱会租手机",
+        "租 iPhone",
+        "租三星"
+      ],
+      "镜头": [
+        "租镜头",
+        "镜头租赁",
+        "租长焦镜头"
+      ]
+    }
   },
   "max_scan_seconds": 1200,
   "max_search_seconds": 480,
@@ -46,9 +205,24 @@
   "max_comment_items": 40,
   "max_comment_items_ceiling": 120,
   "max_replies_threshold": 20,
-  "discovery_categories": ["相机", "手机", "镜头"],
+  "discovery_categories": [
+    "相机",
+    "手机",
+    "镜头"
+  ],
   "sort_by": "最新",
   "publish_time": "不限",
   "send_empty_report": false,
-  "note": "型号与需求词轮换；旧帖按评论发布时间回访；不自动评论、私信、点赞或发布。"
+  "note": "型号与需求词轮换；旧帖按评论发布时间回访；不自动评论、私信、点赞或发布。",
+  "document_layout": {
+    "enabled": true,
+    "followup_initial_status": "未登记",
+    "followup_editor": "authorized_user",
+    "structure": "chronological",
+    "followup_enabled": false,
+    "show_lead_timing": true
+  },
+  "notification_policy": {
+    "operational_issues": "document_only"
+  }
 }

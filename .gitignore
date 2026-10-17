@@ -1,5 +1,7 @@
 .DS_Store
 .env
+.env.*
+!.env.example
 .venv/
 node_modules/
 __pycache__/
@@ -32,10 +34,21 @@ chat-rerun*.json
 chat-rerun*.log
 chat-rerun.lock/
 four-hour.lock/
+four-hour.lock.stale-*/
 smartpage/
 output/
 collaboration/inbox/
 collaboration/ledger.json
+collaboration/merge-ledger.json
+collaboration/reports/
+backups/
+*.log
+*.jsonl
+*.tmp
+four-hour-maintenance-*.json
+*.pdf
+*.png
+*.before-*
 
 # Local inventory and personal configuration
 *.xlsx

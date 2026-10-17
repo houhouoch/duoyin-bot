@@ -44,21 +44,48 @@ function verifyRound(doc,body){
 }
 function counts(doc){
  const stats=doc?.statistics||[];
- return {records:doc?.keys.length||0,notes:stats.reduce((n,s)=>n+s.notes,0),comments:stats.reduce((n,s)=>n+s.comments,0),changes:stats.reduce((n,s)=>n+s.updates+s.corrections,0),posts:doc?.links.length||0};
+ return {supplemental:doc?.supplemental_count||0,records:doc?.keys.length||0,notes:stats.reduce((n,s)=>n+s.notes,0),comments:stats.reduce((n,s)=>n+s.comments,0),changes:stats.reduce((n,s)=>n+s.updates+s.corrections,0),posts:doc?.links.length||0};
 }
-function shortCount(c){return `新增${c.notes+c.comments}条需求／${c.posts}个帖子${c.changes?`，另有${c.changes}条状态更新或更正`:''}`;}
+function shortCount(c){return `新增${c.notes+c.comments}条需求／${c.posts}个帖子${c.supplemental?`（含补充线索${c.supplemental}条）`:''}${c.changes?`，另有${c.changes}条状态更新或更正`:''}`;}
 function summary(day){
  const rounds=Object.values(day.rounds).filter(r=>r.status==='verified');
  const n=rounds.reduce((a,r)=>({notes:a.notes+r.counts.notes,comments:a.comments+r.counts.comments,changes:a.changes+r.counts.changes}),{notes:0,comments:0,changes:0});
  const urls=new Set(rounds.flatMap(r=>r.note_paths||[]));
  return `${SUMMARY_PREFIX}${n.notes+n.comments}条求租需求，来自${urls.size}个原帖；帖子需求${n.notes}条、评论需求${n.comments}条${n.changes?`，另有${n.changes}条状态更新或更正`:''}。已归档${rounds.length}轮。仅统计本日文档已完整保存的记录，不等于独立客户人数，也不表示所有查询或群消息均成功。`;
 }
-function resumeDailyDocuments(pending,delivery,base){
+function resumeDailyDocuments(pending,delivery,base,watch={},recovery={}){
  const keys=new Set(pending.map(x=>x.key)),reserved=new Set(),documents=[];
  for(const day of Object.values(delivery.daily_documents||{}))for(const r of Object.values(day.rounds||{})){
+  if(r.delivery_superseded_at)continue;
   if(!(r.keys||[]).some(k=>keys.has(k)))continue;
-  if(r.status!=='verified')continue;
-  if(!r.keys.every(k=>keys.has(k)))throw Error('既有轮次只有部分记录仍可发送，停止整页重发以免发送过期内容');
+  if(r.status!=='verified'){
+   // A completed append can fail its readback check. Recover only by reading
+   // the known page and validating the immutable snapshot, never by appending.
+   if(!r.writing||!r.page_id||!recovery.cli)throw Error('既有轮次写入结果待核实，需读回原页恢复');
+   const root=path.join(base,'smartpage')+path.sep,p=r.source_doc_file&&path.resolve(r.source_doc_file);
+   if(!p||!p.startsWith(root))throw Error('既有轮次缺少受控原文快照，未重新建页');
+   const doc=JSON.parse(fs.readFileSync(p,'utf8'));
+   if(doc.id!==fingerprint(doc.content,doc.keys)||doc.keys.length!==r.keys.length||doc.keys.some(k=>!r.keys.includes(k)))throw Error('既有轮次原文快照校验失败');
+   const tree=response(recovery.cli,['smartpage','pages','get'],{docid:day.docid});
+   if(!tree.pages?.some(x=>x.page_id===r.page_id&&x.parent_id===day.overview_id))throw Error('既有轮次页面层级发生变化，停止恢复');
+   const page=response(recovery.cli,['smartpage','pages','get'],{docid:day.docid,page_id:r.page_id,content_type:'markdown'}).pages?.[0];
+   if(page?.page_id!==r.page_id)throw Error('既有轮次读回页面不匹配');
+   const body=page.content_file_inner??(page.file_path?fs.readFileSync(page.file_path,'utf8'):null);
+   if(body===null)throw Error('既有轮次正文未返回');
+   verifyRound(doc,decode(body));
+   r.status='verified';r.verified_at=new Date().toISOString();r.recovered_by_readback_at=r.verified_at;
+   if(delivery.documents?.[doc.id])Object.assign(delivery.documents[doc.id],{status:'verified',verified_at:r.verified_at,docid:day.docid,url:r.url,count:doc.keys.length});
+   recovery.save?.();
+  }
+  if(!r.keys.every(k=>keys.has(k))){
+   const missing=r.keys.filter(k=>!keys.has(k));
+   if(missing.some(k=>!watch.outbox?.[k]&&!watch.suppressed?.[k]))throw Error('既有轮次部分记录状态不明，停止整页重发');
+   // Keep the old verified page as evidence. Only current selected records may
+   // enter a new round; deferred records remain in the original outbox.
+   r.delivery_superseded_at=new Date().toISOString();
+   r.delivery_superseded_reason='partial_pending_or_suppressed';
+   continue;
+  }
   if(r.keys.some(k=>reserved.has(k)))throw Error('既有轮次包含重复线索编号');
   const root=path.join(base,'smartpage')+path.sep,p=r.source_doc_file&&path.resolve(r.source_doc_file);
   if(!p||!p.startsWith(root))throw Error('既有轮次缺少受控原文快照，未重新建页');
@@ -68,13 +95,14 @@ function resumeDailyDocuments(pending,delivery,base){
  }
  return {documents,fresh:pending.filter(x=>!reserved.has(x.key))};
 }
-function publishDailyDocument(doc,{cli,delivery,save,base,join='apply',scan,awaiting=0,blocked=0}){
+function publishDailyDocument(doc,{cli,delivery,save,base,join='apply',scan,awaiting=0,blocked=0,layout=require('./monitor-config.json').document_layout}){
+ const chronological=layout?.structure==='chronological';
  const stamp=clock(scan.started_at),runKey=doc?.id||fingerprint('daily-empty:'+scan.started_at,[]);
  delivery.daily_documents||={};delivery.documents||={};
  // A new scan must not copy keys from an existing daily page into another page,
  // even when its group notification has not yet been accepted.
  if(doc)for(const priorDay of Object.values(delivery.daily_documents))for(const [id,r] of Object.entries(priorDay.rounds||{})){
-  if(id!==doc.id&&(r.keys||[]).some(k=>doc.keys.includes(k)))throw Error('已有轮次收录相同待发记录，需沿原轮次回执恢复，未重复建页');
+  if(id!==doc.id&&!r.delivery_superseded_at&&(r.keys||[]).some(k=>doc.keys.includes(k)))throw Error('已有轮次收录相同待发记录，需沿原轮次回执恢复，未重复建页');
  }
  if(doc)for(const [id,prior] of Object.entries(delivery.documents)){
   if(id!==doc.id&&['creating','writing','written'].includes(prior.status)&&(prior.keys||[]).some(k=>doc.keys.includes(k)))throw Error('此前文档结果待核实，未重复建页或发送');
@@ -114,8 +142,9 @@ function publishDailyDocument(doc,{cli,delivery,save,base,join='apply',scan,awai
  const status=doc?shortCount(counts(doc)):(incomplete?'本轮未完成查询或仍有待处理内容，暂无可推送新增':'本轮查询已结束，暂无可推送新增');
  if(!round){
   const ordinal=Object.values(day.rounds).filter(r=>r.time===stamp.time).length+1;
-  round=day.rounds[runKey]={status:'planned',time:stamp.time,title:stamp.name+(ordinal>1?`（补充${ordinal}）`:''),keys:doc?.keys||[],counts:counts(doc),note_paths:(doc?.links||[]).map(u=>new URL(u).pathname),description:status+(doc&&incomplete?'；本轮另有未完成项':''),started_at:scan.started_at};save();
+  round=day.rounds[runKey]={status:'planned',time:stamp.time,title:(chronological?require('./chronological-document.cjs').titleForNew(day,scan.started_at):stamp.name)+(ordinal>1?`（补充${ordinal}）`:''),keys:doc?.keys||[],counts:counts(doc),note_paths:(doc?.links||[]).map(u=>new URL(u).pathname),description:status+(doc&&incomplete?'；本轮另有未完成项':''),started_at:scan.started_at,maintenance:Boolean(scan.maintenance)};save();
  }
+ if(doc?.category_counts){round.category_counts=doc.category_counts;round.supplemental_count=doc.supplemental_count||0;save();}
  if(doc&&!round.source_doc_file){
   const p=path.join(folder,'轮次原文-'+doc.id+'.json');fs.writeFileSync(p,JSON.stringify(doc),{mode:0o600});round.source_doc_file=p;save();
  }
@@ -141,7 +170,7 @@ function publishDailyDocument(doc,{cli,delivery,save,base,join='apply',scan,awai
  const content=doc?`${doc.content}\n\n[返回今日总览](${day.overview_url})\n`:`# ${stamp.day} ${stamp.time}\n\n${emptyText}\n\n[返回今日总览](${day.overview_url})\n`;
  const check=body=>{if(doc)return verifyRound(doc,body);if(!body.includes(emptyText))throw Error('空轮次状态未完整保存');return true;};
  let current=read(round.page_id);
- if(round.writing){check(current);}
+ if(round.writing||round.status==='verified'){check(current);}
  else {
   if(current.trim())throw Error('轮次页面已有内容，未重复追加');
   round.writing=true;if(doc)delivery.documents[doc.id].status='writing';save();
@@ -150,6 +179,13 @@ function publishDailyDocument(doc,{cli,delivery,save,base,join='apply',scan,awai
  }
  round.status='verified';round.verified_at=new Date().toISOString();round.inline_link_verification='accepted-native-markdown-template; client clicks not re-tested';
  if(doc)Object.assign(delivery.documents[doc.id],{status:'verified',docid:day.docid,url:round.url,verified_at:round.verified_at,count:doc.keys.length});save();
+ if(chronological){
+  require('./chronological-document.cjs').syncSummary({cli,delivery,save,base,day});
+  day.status='verified';day.updated_at=new Date().toISOString();save();
+  if(!doc)return {quiet:true,document_url:round.url,overview_url:day.overview_url,document_verified:true};
+  const message=`### 求租线索｜${stamp.short}\n\n${shortCount(round.counts)}\n\n[查看本轮](${round.url})｜[今日汇总](${day.overview_url})`;
+  return {content:message,keys:doc.keys,hash:fingerprint(message,doc.keys),document_url:round.url,overview_url:day.overview_url,document_id:doc.id};
+ }
  const entry=`${round.title}轮次｜${round.description}。`;
  let overview=read(day.overview_id);
  if(!overview.includes(entry)){

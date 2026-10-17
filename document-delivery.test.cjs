@@ -74,7 +74,7 @@ test('sender sends one document link, retries explicit failure, and preserves ke
  const {execFileSync}=require('node:child_process');
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'xhs-document-sender-'));
  try{
-  for(const name of ['notify-four-hour.cjs','document-delivery.cjs','delivery-integrity.cjs','concise-message.cjs','demand-validity.cjs','deepseek-review.cjs','lead-fields.cjs','rental-strategy.cjs','hot-pools.cjs','camera-catalog.json'])fs.copyFileSync(path.join(__dirname,name),path.join(dir,name));
+  for(const name of ['notify-four-hour.cjs','document-delivery.cjs','lead-timeliness.cjs','lead-presentation.cjs','delivery-integrity.cjs','concise-message.cjs','demand-validity.cjs','deepseek-review.cjs','lead-fields.cjs','rental-strategy.cjs','hot-pools.cjs','camera-catalog.json'])fs.copyFileSync(path.join(__dirname,name),path.join(dir,name));
   fs.writeFileSync(path.join(dir,'monitor-config.json'),JSON.stringify({...config,document_delivery:{enabled:true,join:'public'},deepseek_review:{enabled:false}}));
   const rows=Array.from({length:27},(_,i)=>lead(i));
   fs.writeFileSync(path.join(dir,'watchlist.json'),JSON.stringify({outbox:Object.fromEntries(rows.map(x=>[x.key,x]))}));
@@ -101,4 +101,20 @@ else throw Error(cmd);console.log(JSON.stringify(r));`,{mode:0o700});
   const before=fs.readFileSync(path.join(dir,'messages'),'utf8');run({});assert.equal(fs.readFileSync(path.join(dir,'messages'),'utf8'),before);
   assert.equal(fs.readFileSync(path.join(dir,'creates'),'utf8'),'1');assert(before.includes('查看完整文档'));assert(!before.includes('想租相机'));
  }finally{fs.rmSync(dir,{recursive:true});}
+});
+
+test('whole-row verification separates an original quote from a labeled quote',()=>{
+ const a='- 主评论｜测试用户｜10/8：“蹲vivo x300”',b=a+'（意图待确认）';
+ const doc={rows:[a,b],content:a+'\n'+b+'\n结束',end:'结束',links:[]};
+ assert(verifyDocument(doc,doc.content));
+ assert.throws(()=>verifyDocument(doc,doc.content.replace(a+'\n','')),/遗漏或重复/);
+ assert.throws(()=>verifyDocument(doc,doc.content+'\n'+a),/遗漏或重复/);
+ assert.throws(()=>verifyDocument(doc,doc.content.replace(b,a)),/遗漏或重复/);
+});
+test('manual-review rows do not replace or duplicate valid rows',()=>{
+ const row='- 主评论｜测试用户｜10/8：“想租相机”';
+ const doc={rows:[row],content:row+'\n结束',end:'结束',links:[]};
+ const review='### 待核实候选（人工审查）\n'+row+'\n### 补充线索｜同行帖子评论\n';
+ assert(verifyDocument(doc,review+doc.content));
+ assert.throws(()=>verifyDocument(doc,review+'结束'),/遗漏或重复/);
 });

@@ -4,7 +4,7 @@
 
 | 组件 | 固定版本 | 来源 | 用途 |
 | --- | --- | --- | --- |
-| Hermes Agent | `v0.20.2` | [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) | 唯一定时调度、后台 Gateway、聊天 MCP 挂载 |
+| Hermes Agent | 本机报告 `v0.20.2`，锁定上游提交 `b52b725f625d4bd380201b7f655dae0f6cf87ffa`（无同名 release tag） | [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) | 唯一定时调度、后台 Gateway、聊天 MCP 挂载 |
 | 企业微信 CLI | `@wecom/cli@1.2.1` | [WecomTeam/wecom-cli](https://github.com/WecomTeam/wecom-cli) | 企业微信授权、消息、智能文档 |
 | 企业微信官方 Skill | 安装时取对应 CLI Skill | `npx skills add WeComTeam/wecom-cli -y -g` | CLI 命令及授权约束 |
 | 小红书 MCP | `v2.5.0` | [xpzouying/xiaohongshu-mcp](https://github.com/xpzouying/xiaohongshu-mcp/releases/tag/v2.5.0) | 本机只读搜索和详情接口 |
@@ -36,3 +36,5 @@ pipx install xiaohongshu-cli==0.6.4
 ## 为什么不把 MCP 直接交给模型
 
 周期任务使用受限包装层，只开放 `search` 和 `detail`。采集、去重、发送回执均由确定性代码执行。模型只能看到有界公开原文，不能拿到 Cookie、API Token、客户 ID、文档令牌或任意命令执行能力。
+
+项目 Node 依赖由 package-lock.json 固定。PDF 使用 playwright@1.61.1 及其 Chromium，无需 Codex 运行时或 Chrome 绝对路径。Python >=3.10，直接依赖为 mcp==1.30.0、openpyxl==3.1.5、pypdf==6.12.0、PyYAML==6.0.3（模板校验），聊天 MCP 使用标准 SDK FastMCP。

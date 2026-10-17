@@ -7,4 +7,5 @@ node_bin="${NODE_BIN:-$(command -v node)}"
 export DUOYIN_HOME="$repo"
 export DUOYIN_PYTHON="${DUOYIN_PYTHON:-$repo/.venv/bin/python3}"
 export WECOM_CLI_BIN="${WECOM_CLI_BIN:-__WECOM_CLI_BIN__}"
-exec "$node_bin" "$repo/run-four-hour.cjs"
+export TZ=Asia/Shanghai
+exec "$node_bin" "$repo/run-four-hour.cjs" "$@"

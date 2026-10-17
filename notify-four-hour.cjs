@@ -2,7 +2,7 @@ const fs=require('node:fs');
 const path=require('node:path');
 const crypto=require('node:crypto');
 const {execFileSync}=require('node:child_process');
-const {config,merchant,fields,insufficientComment}=require('./lead-fields.cjs');
+const {config,merchant,fields,insufficientComment,sourceMerchant:classifySource,peerExcluded}=require('./lead-fields.cjs');
 const {approved}=require('./deepseek-review.cjs');
 const {validity}=require('./demand-validity.cjs');
 const {start:windowStart}=require('./hot-pools.cjs');
@@ -24,16 +24,15 @@ const scanIndex=process.argv.indexOf('--scan');
 const scan=scanIndex>=0?load(process.argv[scanIndex+1],{}):{};
 const alertIndex=process.argv.indexOf('--alert');
 const alert=alertIndex>=0?process.argv[alertIndex+1]:null;
+const alertRunIndex=process.argv.indexOf('--alert-run');
+const alertRun=alertRunIndex>=0?process.argv[alertRunIndex+1]:null;
+if(alertRunIndex>=0&&!alertRun)throw Error('缺少异常提醒轮次');
+if(alert&&config.notification_policy?.operational_issues==='document_only'){console.log(JSON.stringify({status:'document_only',dry_run:dry,posts:0,comments:0,statuses:0,expected:0,messages:0,reason:'运行问题只归档文档，不单独发群'}));process.exit(0);}
 const watch=load(watchPath,{notes:{},outbox:{}}),history=load(historyPath,{sent:{}}),delivery=load(deliveryPath,{batches:{},reports:{}});
 watch.outbox ||= {};watch.suppressed ||= {};
 const prior=load(path.join(base,'scan-latest.json'),{});
 const observedNotes=new Map([...(prior.notes||[]),...(scan.notes||[])].map(n=>[n.note_id,n]));
-const sourceMerchant=x=>{
- const saved=watch.notes?.[x.note_id],observed=observedNotes.get(x.note_id);
- if(x.source_is_merchant||saved?.manual_merchant)return true;
- if(saved?.is_demand_post||observed?.is_demand_post)return false;
- return Boolean(saved?.is_merchant_post||observed?.is_merchant_post||merchant(x.author,x.author_id,(x.title||'')+'\n'+(x.desc||'')));
-};
+const sourceMerchant=x=>classifySource(x,watch,observedNotes);
 for(const n of prior.notes||[]){
  if(!(config.merchant_author_ids||[]).includes(n.author_id))continue;
  const key='correction:'+n.note_id;
@@ -42,14 +41,16 @@ for(const n of prior.notes||[]){
 }
 for(const [key,x] of Object.entries(watch.outbox)){
  if(x.type==='note'||x.type==='comment')Object.assign(x,fields(x.evidence||x.comment?.text||x.desc||''));
- const excluded=x.type==='comment'?merchant(x.comment.author,x.comment.author_id,x.comment.text):x.type==='note'&&sourceMerchant(x);
+ const excludedPeer=peerExcluded(x,watch,observedNotes);
+ const excluded=excludedPeer||(x.type==='comment'?merchant(x.comment.author,x.comment.author_id,x.comment.text):x.type==='note'&&sourceMerchant(x));
  const insufficient=x.type==='comment'&&insufficientComment(x.comment.text);
  const timing=validity(x);
  const uncertain=Object.values(delivery.batches||{}).some(b=>['attempting','uncertain'].includes(b.status)&&b.keys?.includes(key));
+ if(excludedPeer&&uncertain)continue;
  if(!excluded&&!insufficient&&!uncertain&&timing.status==='expired'){
   watch.suppressed[key]={...x,reason:'明确用机日期已过，未推送',demand_validity:timing,suppressed_at:new Date().toISOString()};delete watch.outbox[key];continue;
  }
- if(excluded||insufficient){watch.suppressed[key]={...x,reason:excluded?'同行供给／推广，不作为客户线索':'意图依据不足或已租过的经验分享',suppressed_at:new Date().toISOString()};delete watch.outbox[key];}
+ if(excluded||insufficient){watch.suppressed[key]={...x,reason:excludedPeer?'用户停用同行来源线索，未纳入':excluded?'同行供给／推广，不作为客户线索':'意图依据不足或已租过的经验分享',suppressed_at:new Date().toISOString()};delete watch.outbox[key];}
 }
 delivery.batches ||= {};delivery.reports ||= {};history.sent ||= {};
 for(const batch of Object.values(delivery.batches)){
@@ -59,7 +60,7 @@ for(const batch of Object.values(delivery.batches)){
 if(!dry){save(deliveryPath,delivery);save(historyPath,history);save(watchPath,watch);}
 const blocked=new Set(Object.values(delivery.batches).filter(b=>b.status==='uncertain').flatMap(b=>b.keys));
 const start=scan.window_start?Date.parse(scan.window_start):windowStart(config.freshness_calendar_days);
-const eligible=Object.values(watch.outbox||{}).filter(x=>!history.sent[x.key]&&!blocked.has(x.key)&&(x.type==='correction'||x.type==='resolved'||(Number.isFinite(x.comment?.published_at_ms||x.published_at_ms)&&(x.comment?.published_at_ms||x.published_at_ms)>=start&&(x.comment?.published_at_ms||x.published_at_ms)<=Date.now()))).filter(x=>x.type==='correction'||(x.type==='comment'?!merchant(x.comment.author,x.comment.author_id,x.comment.text):!sourceMerchant(x))).map(x=>({...x,source_is_merchant:sourceMerchant(x)}));
+const eligible=Object.values(watch.outbox||{}).filter(x=>!history.sent[x.key]&&!blocked.has(x.key)&&(x.type==='correction'||x.type==='resolved'||(Number.isFinite(x.comment?.published_at_ms||x.published_at_ms)&&(x.comment?.published_at_ms||x.published_at_ms)>=start&&(x.comment?.published_at_ms||x.published_at_ms)<=Date.now()))).filter(x=>!peerExcluded(x,watch,observedNotes)).filter(x=>x.type==='correction'||(x.type==='comment'?!merchant(x.comment.author,x.comment.author_id,x.comment.text):!sourceMerchant(x))).map(x=>({...x,source_is_merchant:sourceMerchant(x)}));
 const awaiting=config.deepseek_review?.enabled?eligible.filter(x=>['note','comment'].includes(x.type)&&!approved(x)):[];
 // Alerts never drain the lead queue, particularly when model review has failed.
 const approvedEligible=eligible.filter(x=>!config.deepseek_review?.enabled||!['note','comment'].includes(x.type)||approved(x));
@@ -69,7 +70,7 @@ const prioritized=process.argv.includes('--priority-bypass')?{selected:approvedE
 const pending=alert?[]:prioritized.selected;
 const posts=pending.filter(x=>x.type==='note'),comments=pending.filter(x=>x.type==='comment'),statuses=pending.filter(x=>x.type==='resolved'||x.type==='correction');
 const groups=render({pending,scan,config,alert,awaiting:awaiting.length,blocked:blocked.size});
-const runKey=alert?'alert:'+crypto.createHash('sha256').update(alert).digest('hex')+(scan.started_at?':'+scan.started_at:''):(scan.started_at||'manual')+(process.argv.includes('--first-round')?':first':'');
+const runKey=alert?'alert:'+crypto.createHash('sha256').update(alert).digest('hex')+(scan.started_at?':'+scan.started_at:alertRun?':'+alertRun:''):(scan.started_at||'manual')+(process.argv.includes('--first-round')?':first':'');
 const resultPath=path.join(base,alert?'four-hour-last-alert.json':'four-hour-last-delivery.json');
 if(delivery.reports[runKey]&&!pending.length){
  const result={status:'already_reported',run_key:runKey,checked_at:new Date().toISOString(),awaiting:awaiting.length,blocked:blocked.size};
@@ -82,8 +83,14 @@ if(attachmentManifest&&!alert&&pending.length){
 }
 if(dry){
  const document=!alert&&pending.length&&config.document_delivery?.enabled?require('./document-delivery.cjs').buildDocument(pending,scan,config,Date.now(),blocked.size):null;
- console.log(JSON.stringify({dry_run:true,posts:posts.length,comments:comments.length,statuses:statuses.length,deferred_priority:prioritized.deferred.length,batches:document?1:planned.length,format:attachmentManifest?'file':document?'document-link':'markdown',bytes:document?[Buffer.byteLength(document.content)]:planned.map(g=>Buffer.byteLength(g.content)),expected:pending.length}));
+ console.log(JSON.stringify({dry_run:true,posts:posts.length,comments:comments.length,statuses:statuses.length,deferred_priority:prioritized.deferred.length,batches:document?1:planned.length,format:attachmentManifest||config.document_delivery?.mode==='pdf'?'file':document?'document-link':'markdown',bytes:document?[Buffer.byteLength(document.content)]:planned.map(g=>Buffer.byteLength(g.content)),expected:pending.length}));
  console.log(document?document.content:planned.map(g=>g.content).join('\n'));process.exit(0);
+}
+if(!alert&&!pending.length&&!attachmentManifest&&config.document_delivery?.mode==='pdf'){
+ delivery.runs ||= {};delivery.runs[runKey]={status:'recorded_no_new',expected:0,keys:[],hashes:[],at:new Date().toISOString()};
+ delivery.reports[runKey]=new Date().toISOString();save(deliveryPath,delivery);
+ const result={status:'recorded_no_new',run_key:runKey,expected:0,accepted:0,messages:0,awaiting:awaiting.length,blocked:blocked.size,deferred_priority:prioritized.deferred.length,checked_at:new Date().toISOString()};save(resultPath,result);
+ console.log(JSON.stringify({...result,group:config.target_group}));process.exit(0);
 }
 const version=cli(['--version']).match(/(\d+)\.(\d+)\.(\d+)/);
 if(!version||Number(version[1])<1||(version[1]==='1'&&Number(version[2])<2)||(version[1]==='1'&&version[2]==='2'&&Number(version[3])<1))throw new Error('企业微信CLI版本不符合要求');
@@ -91,8 +98,11 @@ if(cli(['auth','show','--status']).trim()!=='authorized')throw new Error('企业
 const sessions=JSON.parse(cli(['message','aibot','sessions','list']));
 const matches=sessions.sessions.filter(s=>s.chat_name===config.target_group&&s.chat_type==='group');
 if(matches.length!==1)throw new Error('目标群未唯一匹配：'+config.target_group);
-if(!attachmentManifest&&!alert&&config.document_delivery?.enabled&&config.document_delivery?.mode==='daily'){
- const daily=require('./daily-document-delivery.cjs'),resume=daily.resumeDailyDocuments(pending,delivery,base);
+if(!attachmentManifest&&!alert&&pending.length&&config.document_delivery?.enabled&&config.document_delivery?.mode==='pdf'){
+ const doc=require('./document-delivery.cjs').buildDocument(pending,scan,config,Date.now(),blocked.size);
+ planned=[require('./pdf-delivery.cjs').preparePdf(doc,base)];
+}else if(!attachmentManifest&&!alert&&config.document_delivery?.enabled&&config.document_delivery?.mode==='daily'){
+ const daily=require('./daily-document-delivery.cjs'),resume=daily.resumeDailyDocuments(pending,delivery,base,watch,{cli,save:()=>save(deliveryPath,delivery)});
  const context={cli,delivery,save:()=>save(deliveryPath,delivery),base,join:config.document_delivery.join,scan,awaiting:awaiting.length,blocked:blocked.size};
  planned=resume.documents.map(r=>daily.publishDailyDocument(r.doc,{...context,scan:r.scan}));
  const document=resume.fresh.length?require('./document-delivery.cjs').buildDocument(resume.fresh,scan,config,Date.now(),blocked.size):null;

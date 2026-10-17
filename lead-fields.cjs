@@ -32,4 +32,17 @@ function insufficientComment(text){
  if(/我觉得|我认为|我感觉|建议你|推荐你/.test(t)&&!/求租|想租|要租|需要租|能租吗|怎么租/.test(t))return true;
  return /^(?:蹲|蹲蹲|蹲一下|同蹲)(?:\[[^\]]*\]|[\s!！。])*$/u.test(t)||(/我租的|我已经租|我已租到|已经租到了/.test(t)&&!/还没|没租到|还想租|还需要租/.test(t));
 }
-module.exports={fields,config,merchant,insufficientComment};
+function sourceMerchant(x,watch={},observed=new Map()){
+ const saved=watch.notes?.[x.note_id],seen=observed instanceof Map?observed.get(x.note_id):null;
+ if(x.source_is_merchant||x.is_merchant_post||x.manual_merchant||saved?.manual_merchant||saved?.is_merchant_post||seen?.is_merchant_post)return true;
+ // A known merchant author remains excluded even when their post asks to rent.
+ if(merchant(x.author,x.author_id,'')||merchant(saved?.author,saved?.author_id,'')||merchant(seen?.author,seen?.author_id,''))return true;
+ if(x.is_demand_post||x.demand||saved?.is_demand_post||seen?.is_demand_post)return false;
+ const title=x.title||saved?.title||seen?.title||'',desc=x.desc||saved?.desc||seen?.desc||'';
+ const text=title+'\n'+desc;
+ return merchant(x.author||saved?.author||seen?.author,x.author_id||saved?.author_id||seen?.author_id,text)||Boolean(x.merchant)||/出租|租赁|档期充足|免押|包邮|门店|实体店|现货|接单|仓库|店铺|专业出租|平价|可租可买|早订|提前预定|特价|优惠|机型大合集|自用.{0,6}可租/.test(text);
+}
+function peerExcluded(x,watch={},observed=new Map(),settings=config.delivery_priority||{}){
+ return settings.include_peer_leads===false&&['note','comment'].includes(x.type)&&sourceMerchant(x,watch,observed);
+}
+module.exports={fields,config,merchant,insufficientComment,sourceMerchant,peerExcluded};

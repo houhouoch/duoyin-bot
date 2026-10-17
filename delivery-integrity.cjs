@@ -29,6 +29,6 @@ function verifyAccepted(planned,batches,history){
 }
 function completion(scan,review,pending,delivery){
  const incomplete=scan.complete===false||Boolean(scan.warnings?.length)||Boolean(scan.searches?.some(s=>s.error))||review?.status==='partial'||review?.status==='failed'||Boolean(review?.deferred)||pending>0;
- return {status:incomplete?'partial':'completed',needs_alert:incomplete,delivery:delivery?.status||'not_verified'};
+ return {status:incomplete?'partial':'completed',needs_alert:false,issues_recorded:incomplete,delivery:delivery?.status||'not_verified'};
 }
 module.exports={assertSameKeys,prepare,verifyAccepted,completion};
